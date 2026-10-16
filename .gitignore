@@ -1,0 +1,24 @@
+# Build outputs
+*.obj
+*.o
+*.dll
+*.so
+*.dylib
+*.lib
+*.exp
+*.exe
+build/
+bin/
+
+# IDE / Editor artifacts
+.vscode/
+.idea/
+*.suo
+*.user
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
