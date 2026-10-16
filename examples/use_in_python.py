@@ -21,14 +21,14 @@ def load_engine():
         candidates.extend([
             os.path.join(base_dir, "rdna3_ai_engine.dll"),
             os.path.join(parent_dir, "rdna3_ai_engine.dll"),
-            os.path.join(parent_dir, "build", "rdna3_ai_engine.dll"),
+            os.path.join(parent_dir, "build", "lib", "rdna3_ai_engine.dll"),
             os.path.join(parent_dir, "build", "Release", "rdna3_ai_engine.dll")
         ])
     else:
         candidates.extend([
             os.path.join(base_dir, "librdna3_ai_engine.so"),
             os.path.join(parent_dir, "librdna3_ai_engine.so"),
-            os.path.join(parent_dir, "build", "librdna3_ai_engine.so")
+            os.path.join(parent_dir, "build", "lib", "librdna3_ai_engine.so")
         ])
     
     for path in candidates:
@@ -55,7 +55,7 @@ def load_engine():
             lib.rdna3_gemv_int8.restype = c_int
             
             lib.rdna3_read_vector_fp32.argtypes = [c_void_p, c_void_p, c_void_p]
-            lib.rdna3_read_vector_fp32.restype = None
+            lib.rdna3_read_vector_fp32.restype = c_int
             
             lib.rdna3_benchmark_gemv.argtypes = [c_void_p, c_void_p, c_void_p, c_void_p, c_void_p, c_int, POINTER(c_double)]
             lib.rdna3_benchmark_gemv.restype = c_double
@@ -73,23 +73,29 @@ def main():
     engine = load_engine()
     
     ctx = c_void_p()
-    if engine.rdna3_init(byref(ctx)) != 0:
-        raise RuntimeError("[-] Failed to initialize GPU OpenCL context.")
+    rc = engine.rdna3_init(byref(ctx))
+    if rc != 0:
+        raise RuntimeError(f"[-] Failed to initialize GPU OpenCL context (code: {rc}).")
     
-    dev_name = engine.rdna3_get_device_name(ctx).decode('utf-8', errors='ignore')
+    dev_bytes = engine.rdna3_get_device_name(ctx)
+    dev_name = dev_bytes.decode('utf-8', errors='ignore') if dev_bytes else "Unknown GPU"
     print(f"[+] GPU Hardware Active: '{dev_name}'")
     
     M, K = 4096, 4096
     print(f"[+] Creating test tensors (Matrix: {M} x {K} = {M*K:,} parameters)...")
     
-    W = np.random.randint(-127, 127, size=(M, K), dtype=np.int8)
-    X = np.random.randn(K).astype(np.float32)
-    scales = np.full(M, 0.05, dtype=np.float32)
+    # Ensure memory is contiguous for C pointer interop
+    W = np.ascontiguousarray(np.random.randint(-127, 127, size=(M, K), dtype=np.int8))
+    X = np.ascontiguousarray(np.random.randn(K).astype(np.float32))
+    scales = np.ascontiguousarray(np.full(M, 0.05, dtype=np.float32))
     
     tW = engine.rdna3_create_weights_int8(ctx, M, K, W.ctypes.data_as(c_void_p))
     tX = engine.rdna3_create_vector_fp32(ctx, K, X.ctypes.data_as(c_void_p))
     tS = engine.rdna3_create_vector_fp32(ctx, M, scales.ctypes.data_as(c_void_p))
     tY = engine.rdna3_create_vector_fp32(ctx, M, None)
+    
+    if not (tW and tX and tS and tY):
+        raise MemoryError("[-] Failed to allocate tensors in GPU VRAM.")
     
     # Run GPU forward pass
     rc = engine.rdna3_gemv_int8(ctx, tW, tX, tS, tY)

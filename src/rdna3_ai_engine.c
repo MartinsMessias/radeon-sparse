@@ -1,3 +1,4 @@
+#define _CRT_SECURE_NO_WARNINGS
 #define RDNA3_EXPORTS
 #include "rdna3_ai_engine.h"
 
@@ -14,6 +15,7 @@
     #define FREE_LIB(lib) FreeLibrary(lib)
     #define OCL_CANDIDATE_1 "C:\\Windows\\System32\\OpenCL.dll"
     #define OCL_CANDIDATE_2 "OpenCL.dll"
+    #define OCL_CANDIDATE_3 NULL
     #define CL_CALL_CONV WINAPI
 #else
     #include <dlfcn.h>
@@ -23,6 +25,7 @@
     #define FREE_LIB(lib) dlclose(lib)
     #define OCL_CANDIDATE_1 "libOpenCL.so.1"
     #define OCL_CANDIDATE_2 "libOpenCL.so"
+    #define OCL_CANDIDATE_3 "libamdocl64.so"
     #define CL_CALL_CONV
 #endif
 
@@ -102,13 +105,19 @@ static pfn_clFinish clFinish = NULL;
 
 static int load_opencl(void) {
     if (s_hCL) return 1;
+
     s_hCL = LOAD_LIB(OCL_CANDIDATE_1);
-    if (!s_hCL) s_hCL = LOAD_LIB(OCL_CANDIDATE_2);
+    if (!s_hCL && OCL_CANDIDATE_2) s_hCL = LOAD_LIB(OCL_CANDIDATE_2);
+    if (!s_hCL && OCL_CANDIDATE_3) s_hCL = LOAD_LIB(OCL_CANDIDATE_3);
     if (!s_hCL) return 0;
 
     #define BIND_SYM(name) do { \
         name = (pfn_##name)GET_SYM(s_hCL, #name); \
-        if (!name) return 0; \
+        if (!name) { \
+            FREE_LIB(s_hCL); \
+            s_hCL = NULL; \
+            return 0; \
+        } \
     } while (0)
 
     BIND_SYM(clGetPlatformIDs);
@@ -139,7 +148,7 @@ static int load_opencl(void) {
     return 1;
 }
 
-/* Highly Optimized RDNA 3 Wave64 GEMV Compute Shader */
+/* Highly Optimized RDNA 3 Wave64 GEMV Compute Shader with Tail Support & convert_float8 */
 static const char* RDNA3_KERNEL_SOURCE =
 "__kernel void gemv_rdna3_infinity_stream(\n"
 "    __global const char* restrict W,\n"
@@ -153,37 +162,39 @@ static const char* RDNA3_KERNEL_SOURCE =
 "    int tid = get_local_id(0);\n"
 "    if (row >= M) return;\n"
 "\n"
-"    __global const char* rW = W + row * K;\n"
+"    __global const char* rW = W + (size_t)row * K;\n"
 "    float8 acc = (float8)(0.0f);\n"
 "\n"
 "    int num_v8 = K / 8;\n"
 "    for (int v = tid; v < num_v8; v += 64) {\n"
-"        __global const char* ptr = rW + v * 8;\n"
-"        float8 w = (float8)(\n"
-"            (float)ptr[0], (float)ptr[1], (float)ptr[2], (float)ptr[3],\n"
-"            (float)ptr[4], (float)ptr[5], (float)ptr[6], (float)ptr[7]\n"
-"        );\n"
+"        char8 raw_w = vload8(v, rW);\n"
+"        float8 w = convert_float8(raw_w);\n"
 "        float8 x = vload8(v, X);\n"
 "        acc = mad(w, x, acc);\n"
 "    }\n"
 "\n"
+"    float thread_sum = acc.s0 + acc.s1 + acc.s2 + acc.s3 + acc.s4 + acc.s5 + acc.s6 + acc.s7;\n"
+"\n"
+"    /* Robust tail handling for arbitrary K (non-multiples of 8) */\n"
+"    int tail_start = num_v8 * 8;\n"
+"    for (int k = tail_start + tid; k < K; k += 64) {\n"
+"        thread_sum += ((float)rW[k]) * X[k];\n"
+"    }\n"
+"\n"
 "    __local float lds[64];\n"
-"    lds[tid] = acc.s0 + acc.s1 + acc.s2 + acc.s3 + acc.s4 + acc.s5 + acc.s6 + acc.s7;\n"
+"    lds[tid] = thread_sum;\n"
 "    barrier(CLK_LOCAL_MEM_FENCE);\n"
 "\n"
-"    if (tid < 32) lds[tid] += lds[tid + 32];\n"
-"    barrier(CLK_LOCAL_MEM_FENCE);\n"
-"    if (tid < 16) lds[tid] += lds[tid + 16];\n"
-"    barrier(CLK_LOCAL_MEM_FENCE);\n"
-"    if (tid < 8)  lds[tid] += lds[tid + 8];\n"
-"    barrier(CLK_LOCAL_MEM_FENCE);\n"
-"    if (tid < 4)  lds[tid] += lds[tid + 4];\n"
-"    barrier(CLK_LOCAL_MEM_FENCE);\n"
-"    if (tid < 2)  lds[tid] += lds[tid + 2];\n"
-"    barrier(CLK_LOCAL_MEM_FENCE);\n"
+"    /* Parallel tree reduction in LDS */\n"
+"    for (int offset = 32; offset > 0; offset >>= 1) {\n"
+"        if (tid < offset) {\n"
+"            lds[tid] += lds[tid + offset];\n"
+"        }\n"
+"        barrier(CLK_LOCAL_MEM_FENCE);\n"
+"    }\n"
 "\n"
 "    if (tid == 0) {\n"
-"        Y[row] = (lds[0] + lds[1]) * scales[row];\n"
+"        Y[row] = lds[0] * scales[row];\n"
 "    }\n"
 "}\n";
 
@@ -205,14 +216,14 @@ typedef struct {
 } rdna3_tensor_internal;
 
 RDNA3_API int RDNA3_CALL rdna3_init(rdna3_context_t* ctx_out) {
-    if (!ctx_out) return -1;
+    if (!ctx_out) return RDNA3_ERR_INVALID_ARG;
     *ctx_out = NULL;
 
-    if (!load_opencl()) return -2;
+    if (!load_opencl()) return RDNA3_ERR_OPENCL_LOAD_FAILED;
 
     cl_platform_id platforms[8];
     cl_uint num_plats = 0;
-    if (clGetPlatformIDs(8, platforms, &num_plats) != 0 || num_plats == 0) return -3;
+    if (clGetPlatformIDs(8, platforms, &num_plats) != 0 || num_plats == 0) return RDNA3_ERR_NO_PLATFORM;
 
     cl_device_id selected_dev = NULL;
     char dev_name[256] = {0};
@@ -238,24 +249,24 @@ RDNA3_API int RDNA3_CALL rdna3_init(rdna3_context_t* ctx_out) {
         if (selected_dev && (strstr(dev_name, "Radeon") || strstr(dev_name, "AMD"))) break;
     }
 
-    if (!selected_dev) return -4;
+    if (!selected_dev) return RDNA3_ERR_NO_DEVICE;
 
     rdna3_context_internal* state = (rdna3_context_internal*)calloc(1, sizeof(rdna3_context_internal));
-    if (!state) return -5;
+    if (!state) return RDNA3_ERR_HOST_ALLOC_FAILED;
 
     state->device = selected_dev;
     strncpy(state->device_name, dev_name, sizeof(state->device_name) - 1);
 
     cl_int err;
     state->ctx = clCreateContext(NULL, 1, &selected_dev, NULL, NULL, &err);
-    if (err != 0) { free(state); return -6; }
+    if (err != 0) { free(state); return RDNA3_ERR_CONTEXT_FAILED; }
 
     cl_ulong props[] = { CL_QUEUE_PROPERTIES, CL_QUEUE_PROFILING_ENABLE, 0 };
     state->queue = clCreateCommandQueueWithProperties(state->ctx, selected_dev, props, &err);
     if (err != 0) {
         clReleaseContext(state->ctx);
         free(state);
-        return -7;
+        return RDNA3_ERR_QUEUE_FAILED;
     }
 
     state->program = clCreateProgramWithSource(state->ctx, 1, &RDNA3_KERNEL_SOURCE, NULL, &err);
@@ -268,7 +279,7 @@ RDNA3_API int RDNA3_CALL rdna3_init(rdna3_context_t* ctx_out) {
         clReleaseCommandQueue(state->queue);
         clReleaseContext(state->ctx);
         free(state);
-        return -8;
+        return RDNA3_ERR_PROGRAM_BUILD_FAILED;
     }
 
     state->kernel = clCreateKernel(state->program, "gemv_rdna3_infinity_stream", &err);
@@ -277,11 +288,11 @@ RDNA3_API int RDNA3_CALL rdna3_init(rdna3_context_t* ctx_out) {
         clReleaseCommandQueue(state->queue);
         clReleaseContext(state->ctx);
         free(state);
-        return -9;
+        return RDNA3_ERR_KERNEL_FAILED;
     }
 
     *ctx_out = (rdna3_context_t)state;
-    return 0;
+    return RDNA3_SUCCESS;
 }
 
 RDNA3_API const char* RDNA3_CALL rdna3_get_device_name(rdna3_context_t ctx) {
@@ -314,7 +325,11 @@ RDNA3_API rdna3_tensor_t RDNA3_CALL rdna3_create_weights_int8(
     if (err != 0) return NULL;
 
     if (host_data) {
-        clEnqueueWriteBuffer(state->queue, buf, 1, 0, bytes, host_data, 0, NULL, NULL);
+        err = clEnqueueWriteBuffer(state->queue, buf, 1, 0, bytes, host_data, 0, NULL, NULL);
+        if (err != 0) {
+            clReleaseMemObject(buf);
+            return NULL;
+        }
     }
 
     rdna3_tensor_internal* t = (rdna3_tensor_internal*)malloc(sizeof(rdna3_tensor_internal));
@@ -342,7 +357,11 @@ RDNA3_API rdna3_tensor_t RDNA3_CALL rdna3_create_vector_fp32(
     if (err != 0) return NULL;
 
     if (host_data) {
-        clEnqueueWriteBuffer(state->queue, buf, 1, 0, bytes, host_data, 0, NULL, NULL);
+        err = clEnqueueWriteBuffer(state->queue, buf, 1, 0, bytes, host_data, 0, NULL, NULL);
+        if (err != 0) {
+            clReleaseMemObject(buf);
+            return NULL;
+        }
     }
 
     rdna3_tensor_internal* t = (rdna3_tensor_internal*)malloc(sizeof(rdna3_tensor_internal));
@@ -371,12 +390,17 @@ RDNA3_API int RDNA3_CALL rdna3_gemv_int8(
     rdna3_tensor_t scales,
     rdna3_tensor_t output_y
 ) {
-    if (!ctx || !weights || !input_x || !scales || !output_y) return -1;
+    if (!ctx || !weights || !input_x || !scales || !output_y) return RDNA3_ERR_INVALID_ARG;
     rdna3_context_internal* state = (rdna3_context_internal*)ctx;
     rdna3_tensor_internal* tW = (rdna3_tensor_internal*)weights;
     rdna3_tensor_internal* tX = (rdna3_tensor_internal*)input_x;
     rdna3_tensor_internal* tS = (rdna3_tensor_internal*)scales;
     rdna3_tensor_internal* tY = (rdna3_tensor_internal*)output_y;
+
+    /* Strict dimension validation to prevent GPU memory out-of-bounds */
+    if (tW->cols != tX->rows || tW->rows != tS->rows || tW->rows != tY->rows) {
+        return RDNA3_ERR_DIMENSION_MISMATCH;
+    }
 
     int M = tW->rows;
     int K = tW->cols;
@@ -392,23 +416,26 @@ RDNA3_API int RDNA3_CALL rdna3_gemv_int8(
     cl_size_t global_size = (cl_size_t)M * local_size;
 
     cl_int err = clEnqueueNDRangeKernel(state->queue, state->kernel, 1, NULL, &global_size, &local_size, 0, NULL, NULL);
-    if (err != 0) return err;
+    if (err != 0) return RDNA3_ERR_EXECUTION_FAILED;
 
     clFinish(state->queue);
-    return 0;
+    return RDNA3_SUCCESS;
 }
 
-RDNA3_API void RDNA3_CALL rdna3_read_vector_fp32(
+RDNA3_API int RDNA3_CALL rdna3_read_vector_fp32(
     rdna3_context_t ctx,
     rdna3_tensor_t tensor,
     float* host_dst
 ) {
-    if (!ctx || !tensor || !host_dst) return;
+    if (!ctx || !tensor || !host_dst) return RDNA3_ERR_INVALID_ARG;
     rdna3_context_internal* state = (rdna3_context_internal*)ctx;
     rdna3_tensor_internal* t = (rdna3_tensor_internal*)tensor;
 
-    clEnqueueReadBuffer(state->queue, t->buffer, 1, 0, t->size_bytes, host_dst, 0, NULL, NULL);
+    cl_int err = clEnqueueReadBuffer(state->queue, t->buffer, 1, 0, t->size_bytes, host_dst, 0, NULL, NULL);
+    if (err != 0) return RDNA3_ERR_TRANSFER_FAILED;
+
     clFinish(state->queue);
+    return RDNA3_SUCCESS;
 }
 
 RDNA3_API double RDNA3_CALL rdna3_benchmark_gemv(
@@ -426,6 +453,10 @@ RDNA3_API double RDNA3_CALL rdna3_benchmark_gemv(
     rdna3_tensor_internal* tX = (rdna3_tensor_internal*)input_x;
     rdna3_tensor_internal* tS = (rdna3_tensor_internal*)scales;
     rdna3_tensor_internal* tY = (rdna3_tensor_internal*)output_y;
+
+    if (tW->cols != tX->rows || tW->rows != tS->rows || tW->rows != tY->rows) {
+        return 0.0;
+    }
 
     int M = tW->rows;
     int K = tW->cols;
@@ -447,19 +478,28 @@ RDNA3_API double RDNA3_CALL rdna3_benchmark_gemv(
     clFinish(state->queue);
 
     cl_ulong total_time_ns = 0;
+    int valid_runs = 0;
+
     for (int i = 0; i < iterations; i++) {
-        cl_event evt;
-        clEnqueueNDRangeKernel(state->queue, state->kernel, 1, NULL, &global_size, &local_size, 0, NULL, &evt);
+        cl_event evt = NULL;
+        cl_int err = clEnqueueNDRangeKernel(state->queue, state->kernel, 1, NULL, &global_size, &local_size, 0, NULL, &evt);
+        if (err != 0 || !evt) continue;
+
         clWaitForEvents(1, &evt);
 
         cl_ulong start = 0, end = 0;
         clGetEventProfilingInfo(evt, CL_PROFILING_COMMAND_START, sizeof(cl_ulong), &start, NULL);
         clGetEventProfilingInfo(evt, CL_PROFILING_COMMAND_END, sizeof(cl_ulong), &end, NULL);
-        total_time_ns += (end - start);
+        if (end > start) {
+            total_time_ns += (end - start);
+            valid_runs++;
+        }
         clReleaseEvent(evt);
     }
 
-    double avg_time_us = (double)total_time_ns / (iterations * 1000.0);
+    if (valid_runs == 0) return 0.0;
+
+    double avg_time_us = (double)total_time_ns / (valid_runs * 1000.0);
     double total_bytes = (double)M * K * sizeof(char) + (double)K * sizeof(float) + (double)M * sizeof(float);
     double time_s = (avg_time_us * 1e-6);
     double bw = (total_bytes / time_s) / 1e9;

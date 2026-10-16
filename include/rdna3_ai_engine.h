@@ -22,6 +22,24 @@ extern "C" {
     #define RDNA3_CALL
 #endif
 
+/* Status / Error Codes */
+typedef enum {
+    RDNA3_SUCCESS                  =  0,
+    RDNA3_ERR_INVALID_ARG          = -1,
+    RDNA3_ERR_OPENCL_LOAD_FAILED   = -2,
+    RDNA3_ERR_NO_PLATFORM          = -3,
+    RDNA3_ERR_NO_DEVICE            = -4,
+    RDNA3_ERR_HOST_ALLOC_FAILED    = -5,
+    RDNA3_ERR_CONTEXT_FAILED       = -6,
+    RDNA3_ERR_QUEUE_FAILED         = -7,
+    RDNA3_ERR_PROGRAM_BUILD_FAILED = -8,
+    RDNA3_ERR_KERNEL_FAILED        = -9,
+    RDNA3_ERR_DIMENSION_MISMATCH   = -10,
+    RDNA3_ERR_EXECUTION_FAILED     = -11,
+    RDNA3_ERR_VRAM_ALLOC_FAILED    = -12,
+    RDNA3_ERR_TRANSFER_FAILED      = -13
+} rdna3_status_t;
+
 /* Opaque handles */
 typedef void* rdna3_context_t;
 typedef void* rdna3_tensor_t;
@@ -29,7 +47,7 @@ typedef void* rdna3_tensor_t;
 /**
  * Initialize GPU OpenCL context and compile JIT RDNA 3 Wave64 compute shaders.
  * Scans available platforms and selects the fastest AMD Radeon device.
- * Returns 0 on success, negative error code on failure.
+ * Returns RDNA3_SUCCESS (0) on success, or negative rdna3_status_t error code.
  */
 RDNA3_API int RDNA3_CALL rdna3_init(rdna3_context_t* ctx_out);
 
@@ -43,6 +61,7 @@ RDNA3_API const char* RDNA3_CALL rdna3_get_device_name(rdna3_context_t ctx);
  * rows: number of output features (M)
  * cols: number of input features (K)
  * host_data: optional pointer to host data (rows * cols bytes) for initial upload.
+ * Returns tensor handle, or NULL on failure.
  */
 RDNA3_API rdna3_tensor_t RDNA3_CALL rdna3_create_weights_int8(
     rdna3_context_t ctx,
@@ -55,6 +74,7 @@ RDNA3_API rdna3_tensor_t RDNA3_CALL rdna3_create_weights_int8(
  * Creates an FP32 vector tensor in GPU VRAM (for inputs, scales, or activations).
  * size: number of float elements
  * host_data: optional pointer to host data (size * sizeof(float)) for initial upload.
+ * Returns tensor handle, or NULL on failure.
  */
 RDNA3_API rdna3_tensor_t RDNA3_CALL rdna3_create_vector_fp32(
     rdna3_context_t ctx,
@@ -76,6 +96,8 @@ RDNA3_API void RDNA3_CALL rdna3_free_tensor(
  * X: FP32 input vector [K]
  * scales: FP32 per-channel quantization scale vector [M]
  * Y: FP32 output vector [M]
+ * Validates dimensions strictly to prevent GPU memory out-of-bounds.
+ * Returns RDNA3_SUCCESS (0) or negative error code.
  */
 RDNA3_API int RDNA3_CALL rdna3_gemv_int8(
     rdna3_context_t ctx,
@@ -87,8 +109,9 @@ RDNA3_API int RDNA3_CALL rdna3_gemv_int8(
 
 /**
  * Reads an FP32 vector from GPU VRAM back into host memory.
+ * Returns RDNA3_SUCCESS (0) or negative error code.
  */
-RDNA3_API void RDNA3_CALL rdna3_read_vector_fp32(
+RDNA3_API int RDNA3_CALL rdna3_read_vector_fp32(
     rdna3_context_t ctx,
     rdna3_tensor_t tensor,
     float* host_dst
