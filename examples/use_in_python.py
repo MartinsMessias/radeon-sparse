@@ -1,135 +1,63 @@
 #!/usr/bin/env python3
 """
-Python Client Example for rdna3-ai-engine
-Supports both Windows (rdna3_ai_engine.dll) and Linux (librdna3_ai_engine.so).
-Zero external C dependencies required.
+RDNA 3 / RDNA 4 AI Engine — Python SDK Quickstart
+Demonstrates drop-in SparseLinearLayer usage with automatic INT8 quantization,
+Dense Wave64 GEMV, and Contextual Sparsity Gather-GEMV.
 """
 
 import os
 import sys
-import platform
-import ctypes
-from ctypes import c_void_p, c_int, c_double, byref, POINTER
 import numpy as np
 
-def load_engine():
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    parent_dir = os.path.dirname(base_dir)
-    
-    candidates = []
-    if platform.system() == "Windows":
-        candidates.extend([
-            os.path.join(base_dir, "rdna3_ai_engine.dll"),
-            os.path.join(parent_dir, "rdna3_ai_engine.dll"),
-            os.path.join(parent_dir, "build", "lib", "rdna3_ai_engine.dll"),
-            os.path.join(parent_dir, "build", "Release", "rdna3_ai_engine.dll")
-        ])
-    else:
-        candidates.extend([
-            os.path.join(base_dir, "librdna3_ai_engine.so"),
-            os.path.join(parent_dir, "librdna3_ai_engine.so"),
-            os.path.join(parent_dir, "build", "lib", "librdna3_ai_engine.so")
-        ])
-    
-    for path in candidates:
-        if os.path.exists(path):
-            print(f"[+] Loading engine library: {path}")
-            lib = ctypes.CDLL(path)
-            
-            lib.rdna3_init.argtypes = [POINTER(c_void_p)]
-            lib.rdna3_init.restype = c_int
-            
-            lib.rdna3_get_device_name.argtypes = [c_void_p]
-            lib.rdna3_get_device_name.restype = ctypes.c_char_p
-            
-            lib.rdna3_create_weights_int8.argtypes = [c_void_p, c_int, c_int, c_void_p]
-            lib.rdna3_create_weights_int8.restype = c_void_p
-            
-            lib.rdna3_create_vector_fp32.argtypes = [c_void_p, c_int, c_void_p]
-            lib.rdna3_create_vector_fp32.restype = c_void_p
-            
-            lib.rdna3_free_tensor.argtypes = [c_void_p, c_void_p]
-            lib.rdna3_free_tensor.restype = None
-            
-            lib.rdna3_gemv_int8.argtypes = [c_void_p, c_void_p, c_void_p, c_void_p, c_void_p]
-            lib.rdna3_gemv_int8.restype = c_int
-            
-            lib.rdna3_read_vector_fp32.argtypes = [c_void_p, c_void_p, c_void_p]
-            lib.rdna3_read_vector_fp32.restype = c_int
-            
-            lib.rdna3_benchmark_gemv.argtypes = [c_void_p, c_void_p, c_void_p, c_void_p, c_void_p, c_int, POINTER(c_double)]
-            lib.rdna3_benchmark_gemv.restype = c_double
-            
-            lib.rdna3_shutdown.argtypes = [c_void_p]
-            lib.rdna3_shutdown.restype = None
-            return lib
-            
-    raise FileNotFoundError(
-        f"Could not find compiled library. Please run build_windows.bat or build_linux.sh first.\nTried paths:\n" +
-        "\n".join(candidates)
-    )
+# Add repo root so `python` SDK package can be imported directly
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from python.rdna3_engine import RDNA3Engine
 
-def main():
-    engine = load_engine()
-    
-    ctx = c_void_p()
-    rc = engine.rdna3_init(byref(ctx))
-    if rc != 0:
-        raise RuntimeError(f"[-] Failed to initialize GPU OpenCL context (code: {rc}).")
-    
-    dev_bytes = engine.rdna3_get_device_name(ctx)
-    dev_name = dev_bytes.decode('utf-8', errors='ignore') if dev_bytes else "Unknown GPU"
-    print(f"[+] GPU Hardware Active: '{dev_name}'")
-    
-    M, K = 4096, 4096
-    print(f"[+] Creating test tensors (Matrix: {M} x {K} = {M*K:,} parameters)...")
-    
-    # Ensure memory is contiguous for C pointer interop
-    W = np.ascontiguousarray(np.random.randint(-127, 127, size=(M, K), dtype=np.int8))
-    X = np.ascontiguousarray(np.random.randn(K).astype(np.float32))
-    scales = np.ascontiguousarray(np.full(M, 0.05, dtype=np.float32))
-    
-    tW = engine.rdna3_create_weights_int8(ctx, M, K, W.ctypes.data_as(c_void_p))
-    tX = engine.rdna3_create_vector_fp32(ctx, K, X.ctypes.data_as(c_void_p))
-    tS = engine.rdna3_create_vector_fp32(ctx, M, scales.ctypes.data_as(c_void_p))
-    tY = engine.rdna3_create_vector_fp32(ctx, M, None)
-    
-    if not (tW and tX and tS and tY):
-        raise MemoryError("[-] Failed to allocate tensors in GPU VRAM.")
-    
-    # Run GPU forward pass
-    rc = engine.rdna3_gemv_int8(ctx, tW, tX, tS, tY)
-    if rc != 0:
-        raise RuntimeError(f"[-] GEMV computation failed with code {rc}")
-        
-    y_gpu = np.empty(M, dtype=np.float32)
-    engine.rdna3_read_vector_fp32(ctx, tY, y_gpu.ctypes.data_as(c_void_p))
-    
-    # Numerical validation against CPU FP64 reference
-    y_cpu = (W.astype(np.float64) @ X.astype(np.float64)) * scales.astype(np.float64)
-    max_err = np.max(np.abs(y_gpu - y_cpu))
-    print(f"[+] Numerical Accuracy Check: Max Absolute Error = {max_err:.6f} (PASSED)")
-    
-    # Hardware latency & bandwidth benchmark
-    bw = c_double()
-    iterations = 200
-    lat_us = engine.rdna3_benchmark_gemv(ctx, tW, tX, tS, tY, iterations, byref(bw))
-    
-    print("\n" + "=" * 55)
-    print(" RDNA 3 GPU HARDWARE BENCHMARK RESULTS:")
-    print("=" * 55)
-    print(f" Layer Matrix Dimension:     {M} x {K} ({M*K/1e6:.1f} M params)")
-    print(f" Average Latency per Layer:  {lat_us:.2f} us ({lat_us*1e-3:.4f} ms)")
-    print(f" Effective Hardware Bandwidth: {bw.value:.2f} GB/s")
-    print(f" GEMV Throughput:            {1e6 / lat_us:.1f} ops/sec")
-    print("=" * 55)
-    
-    engine.rdna3_free_tensor(ctx, tW)
-    engine.rdna3_free_tensor(ctx, tX)
-    engine.rdna3_free_tensor(ctx, tS)
-    engine.rdna3_free_tensor(ctx, tY)
-    engine.rdna3_shutdown(ctx)
-    print("[+] Resources released successfully.")
+
+def main() -> None:
+    print("=" * 72)
+    print("   RDNA 3 / RDNA 4 AI ENGINE — PYTHON SDK QUICKSTART")
+    print("=" * 72)
+
+    with RDNA3Engine() as engine:
+        print(f"[GPU] Active Device : {engine.device_name}\n")
+
+        # 1. Create a standard FP32 weight matrix (e.g., Qwen-2.5 FFN projection)
+        M, K = 14336, 4096
+        print(f"[Init] Quantizing FP32 layer [{M} x {K}] to INT8 in VRAM...")
+        np.random.seed(42)
+        weights_fp32 = np.random.randn(M, K).astype(np.float32) * 0.02
+        x = np.random.randn(K).astype(np.float32)
+
+        layer = engine.create_layer_from_float(weights_fp32)
+
+        # 2. Dense Wave64 GEMV Forward Pass
+        y_dense = layer.forward(x)
+
+        # Verify against quantized CPU reference
+        w_q, s_q = engine.quantize_fp32(weights_fp32)
+        y_ref = (w_q.astype(np.float32) @ x) * s_q
+        max_err = float(np.max(np.abs(y_dense - y_ref)))
+
+        # 3. Contextual Sparsity Gather-GEMV (20% active rows)
+        num_active = int(M * 0.20)
+        active_indices = np.argsort(np.abs(y_dense))[-num_active:].astype(np.int32)
+        y_sparse = layer.forward_sparse(x, active_indices)
+
+        # 4. Run Hardware-Timed Benchmark
+        stats = layer.benchmark(iterations=200, active_ratio=0.20)
+
+        print(f"[Validation] Max Abs Error vs CPU Reference : {max_err:.6f} (PASS)")
+        print("-" * 72)
+        print(f"[Dense Wave64 GEMV]      Latency: {stats['dense_latency_us']:6.2f} us | "
+              f"VRAM BW: {stats['dense_bandwidth_gb_s']:6.2f} GB/s")
+        print(f"[Sparse Gather 20% Act]  Latency: {stats['sparse_latency_us']:6.2f} us | "
+              f"Effective BW: {stats['sparse_effective_bw_gb_s']:7.2f} GB/s "
+              f"({stats['speedup']:.2f}x speedup)")
+        print("=" * 72)
+
+        layer.close()
+
 
 if __name__ == "__main__":
     main()

@@ -1,31 +1,32 @@
-cmake_minimum_required(VERSION 3.14)
-project(rdna3_ai_engine C)
+cmake_minimum_required(VERSION 3.15)
+project(rdna3_ai_engine VERSION 2.0.0 LANGUAGES C)
 
-set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
-
-# Configure output directories for clean artifact discovery
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-# Shared library target
+# 1. Shared Library (DLL on Windows, .so on Linux)
 add_library(rdna3_ai_engine SHARED src/rdna3_ai_engine.c)
-target_include_directories(rdna3_ai_engine PUBLIC include)
-target_compile_definitions(rdna3_ai_engine PRIVATE RDNA3_EXPORTS)
+target_include_directories(rdna3_ai_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-if (MSVC)
-    target_compile_options(rdna3_ai_engine PRIVATE /W4 /wd4100 /wd4204 /wd4152)
-else()
-    target_compile_options(rdna3_ai_engine PRIVATE -Wall -Wextra -Wno-unused-parameter)
-    target_link_libraries(rdna3_ai_engine PRIVATE ${CMAKE_DL_LIBS} m)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(rdna3_ai_engine PRIVATE dl m)
+    target_compile_options(rdna3_ai_engine PRIVATE -O3 -fPIC -fvisibility=hidden -Wall -Wextra)
+elseif(MSVC)
+    target_compile_options(rdna3_ai_engine PRIVATE /O2 /W3)
 endif()
 
-# C Example executable
-add_executable(use_in_c examples/use_in_c.c)
-target_include_directories(use_in_c PRIVATE include)
-target_link_libraries(use_in_c PRIVATE rdna3_ai_engine)
+# 2. Official Benchmark Suite (rdna3-bench)
+add_executable(rdna3-bench benchmarks/rdna3_bench.c)
+target_link_libraries(rdna3-bench PRIVATE rdna3_ai_engine)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(rdna3-bench PRIVATE m)
+endif()
 
-if (NOT WIN32)
-    set_target_properties(use_in_c PROPERTIES BUILD_RPATH "\$ORIGIN/../lib")
+# 3. C Quickstart Example (use_in_c)
+add_executable(use_in_c examples/use_in_c.c)
+target_link_libraries(use_in_c PRIVATE rdna3_ai_engine)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(use_in_c PRIVATE m)
 endif()
