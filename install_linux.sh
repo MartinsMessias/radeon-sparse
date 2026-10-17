@@ -25,8 +25,8 @@ fi
 
 cp -f bin/libradeon_sparse.so python/libradeon_sparse.so
 
-echo "[2/4] Installing Python package (pip install -e .) ..."
-python3 -m pip install -e . --quiet || true
+echo "[2/4] Installing Python package (pip install .) ..."
+python3 -m pip install . --no-deps --quiet || true
 
 echo "======================================================================"
 echo "[SUCCESS] RadeonSparse is now globally installed!"

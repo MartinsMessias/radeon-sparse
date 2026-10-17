@@ -32,8 +32,8 @@ setx RADEON_SPARSE_HOME "%INSTALL_DIR%" >nul
 echo [3/4] Adding %INSTALL_DIR%\bin to User PATH ...
 powershell -NoProfile -Command "$p = [Environment]::GetEnvironmentVariable('Path', 'User'); if ($p -notlike '*%INSTALL_DIR%\bin*') { [Environment]::SetEnvironmentVariable('Path', $p + ';%INSTALL_DIR%\bin', 'User'); Write-Host '      Added to User PATH.' } else { Write-Host '      Already in User PATH.' }"
 
-echo [4/4] Installing global Python package (pip install -e .) ...
-python -m pip install -e . --no-deps --quiet
+echo [4/4] Installing global Python package (pip install .) ...
+python -m pip install . --no-deps --quiet
 
 popd
 echo.
