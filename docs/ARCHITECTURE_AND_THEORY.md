@@ -36,8 +36,8 @@ Because $\text{SiLU}(z) = z \cdot \sigma(z)$ strongly suppresses negative and sm
 ### A. Vectorized `vload8` + Hardware `convert_float8`
 Instead of scalar byte loads that cause bank conflicts and underutilize the memory controller, each Wavefront (64 threads) executes coalesced 64-bit vector loads (`char8 raw_w = vload8(v, rW)`) followed by hardware vector conversion (`float8 w = convert_float8(raw_w)`) and fused multiply-add (`mad(w, x, acc)`), concluding with a conflict-free Local Data Share (LDS) tree reduction.
 
-### B. Indirect Row Gathering (`gemv_rdna3_contextual_gather`) & L3 Cache Amplification
-Instead of dispatching $M$ workgroups across the entire matrix, `rdna3_gather_gemv_int8` dispatches only `num_active` workgroups ($N_{\text{act}} \approx 0.20 M$):
+### B. Indirect Row Gathering (`gemv_radeon_sparse_gather`) & L3 Cache Amplification
+Instead of dispatching $M$ workgroups across the entire matrix, `rs_gather_gemv_int8` dispatches only `num_active` workgroups ($N_{\text{act}} \approx 0.20 M$):
 
 ```c
 int row = active_rows[get_group_id(0)];

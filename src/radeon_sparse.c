@@ -1,6 +1,6 @@
 #define _CRT_SECURE_NO_WARNINGS
-#define RDNA3_EXPORTS
-#include "rdna3_ai_engine.h"
+#define RADEON_SPARSE_EXPORTS
+#include "radeon_sparse.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -149,14 +149,14 @@ static int load_opencl(void) {
 }
 
 /* ============================================================================
- * RDNA 3 / RDNA 4 Wave64 Compute Shaders
+ * RadeonSparse OpenCL Compute Shaders
  * - Uses vectorized 64-bit `vload8` + hardware `convert_float8`
  * - Supports arbitrary K dimensions via scalar tail loop
  * - Uses conflict-free LDS parallel tree reduction
  * ============================================================================ */
-static const char* RDNA3_KERNEL_SOURCE =
-"/* 1. Dense Wave64 Infinity Stream GEMV */\n"
-"__kernel void gemv_rdna3_infinity_stream(\n"
+static const char* RADEON_SPARSE_KERNEL_SOURCE =
+"/* 1. Dense Vectorized Wavefront GEMV */\n"
+"__kernel void gemv_radeon_dense(\n"
 "    __global const char* restrict W,\n"
 "    __global const float* restrict X,\n"
 "    __global const float* restrict scales,\n"
@@ -202,8 +202,8 @@ static const char* RDNA3_KERNEL_SOURCE =
 "    }\n"
 "}\n"
 "\n"
-"/* 2. Contextual Sparsity Gather-GEMV (skips inactive rows in GDDR6) */\n"
-"__kernel void gemv_rdna3_contextual_gather(\n"
+"/* 2. Contextual Sparsity Gather-GEMV (skips inactive rows in VRAM) */\n"
+"__kernel void gemv_radeon_sparse_gather(\n"
 "    __global const char* restrict W,\n"
 "    __global const float* restrict X,\n"
 "    __global const float* restrict scales,\n"
@@ -255,7 +255,7 @@ static const char* RDNA3_KERNEL_SOURCE =
 "}\n"
 "\n"
 "/* 3. Fast Vector Zeroing */\n"
-"__kernel void rdna3_zero_vector(\n"
+"__kernel void radeon_zero_vector(\n"
 "    __global float* restrict vec,\n"
 "    const int size\n"
 ") {\n"
@@ -266,7 +266,7 @@ static const char* RDNA3_KERNEL_SOURCE =
 "}\n"
 "\n"
 "/* 4. Hardware SwiGLU / Top-K Activation Gate */\n"
-"__kernel void rdna3_activation_gate(\n"
+"__kernel void radeon_activation_gate(\n"
 "    __global const float* restrict gate,\n"
 "    __global const float* restrict up,\n"
 "    __global float* restrict out_h,\n"
@@ -294,7 +294,7 @@ typedef struct {
     cl_kernel kernel_gate;
     cl_device_id device;
     char device_name[256];
-} rdna3_context_internal;
+} rs_context_internal;
 
 typedef struct {
     cl_mem buffer;
@@ -302,37 +302,37 @@ typedef struct {
     int rows;
     int cols;
     int type; /* 0 = fp32 vec, 1 = int8 weights, 2 = int32 indices */
-} rdna3_tensor_internal;
+} rs_tensor_internal;
 
-RDNA3_API const char* RDNA3_CALL rdna3_status_string(int status) {
+RS_API const char* RS_CALL rs_status_string(int status) {
     switch (status) {
-        case RDNA3_SUCCESS:                  return "Success";
-        case RDNA3_ERR_INVALID_ARG:          return "Invalid argument (NULL pointer or non-positive dimension)";
-        case RDNA3_ERR_OPENCL_LOAD_FAILED:   return "Failed to load OpenCL runtime library (OpenCL.dll / libOpenCL.so)";
-        case RDNA3_ERR_NO_PLATFORM:          return "No OpenCL platform found";
-        case RDNA3_ERR_NO_DEVICE:            return "No compatible GPU device found";
-        case RDNA3_ERR_HOST_ALLOC_FAILED:    return "Host memory allocation failed";
-        case RDNA3_ERR_CONTEXT_FAILED:       return "Failed to create OpenCL context";
-        case RDNA3_ERR_QUEUE_FAILED:         return "Failed to create OpenCL command queue";
-        case RDNA3_ERR_PROGRAM_BUILD_FAILED: return "Failed to compile RDNA 3 OpenCL compute shaders";
-        case RDNA3_ERR_KERNEL_FAILED:        return "Failed to create OpenCL kernel object";
-        case RDNA3_ERR_DIMENSION_MISMATCH:   return "Tensor dimension mismatch in kernel dispatch";
-        case RDNA3_ERR_EXECUTION_FAILED:     return "OpenCL kernel execution failed";
-        case RDNA3_ERR_VRAM_ALLOC_FAILED:    return "GPU VRAM buffer allocation failed";
-        case RDNA3_ERR_TRANSFER_FAILED:      return "Host-to-GPU or GPU-to-Host memory transfer failed";
-        default:                             return "Unknown error code";
+        case RS_SUCCESS:                  return "Success";
+        case RS_ERR_INVALID_ARG:          return "Invalid argument (NULL pointer or non-positive dimension)";
+        case RS_ERR_OPENCL_LOAD_FAILED:   return "Failed to load OpenCL runtime library (OpenCL.dll / libOpenCL.so)";
+        case RS_ERR_NO_PLATFORM:          return "No OpenCL platform found";
+        case RS_ERR_NO_DEVICE:            return "No compatible GPU device found";
+        case RS_ERR_HOST_ALLOC_FAILED:    return "Host memory allocation failed";
+        case RS_ERR_CONTEXT_FAILED:       return "Failed to create OpenCL context";
+        case RS_ERR_QUEUE_FAILED:         return "Failed to create OpenCL command queue";
+        case RS_ERR_PROGRAM_BUILD_FAILED: return "Failed to compile RadeonSparse OpenCL compute shaders";
+        case RS_ERR_KERNEL_FAILED:        return "Failed to create OpenCL kernel object";
+        case RS_ERR_DIMENSION_MISMATCH:   return "Tensor dimension mismatch in kernel dispatch";
+        case RS_ERR_EXECUTION_FAILED:     return "OpenCL kernel execution failed";
+        case RS_ERR_VRAM_ALLOC_FAILED:    return "GPU VRAM buffer allocation failed";
+        case RS_ERR_TRANSFER_FAILED:      return "Host-to-GPU or GPU-to-Host memory transfer failed";
+        default:                          return "Unknown error code";
     }
 }
 
-RDNA3_API int RDNA3_CALL rdna3_init(rdna3_context_t* ctx_out) {
-    if (!ctx_out) return RDNA3_ERR_INVALID_ARG;
+RS_API int RS_CALL rs_init(rs_context_t* ctx_out) {
+    if (!ctx_out) return RS_ERR_INVALID_ARG;
     *ctx_out = NULL;
 
-    if (!load_opencl()) return RDNA3_ERR_OPENCL_LOAD_FAILED;
+    if (!load_opencl()) return RS_ERR_OPENCL_LOAD_FAILED;
 
     cl_platform_id platforms[8];
     cl_uint num_plats = 0;
-    if (clGetPlatformIDs(8, platforms, &num_plats) != 0 || num_plats == 0) return RDNA3_ERR_NO_PLATFORM;
+    if (clGetPlatformIDs(8, platforms, &num_plats) != 0 || num_plats == 0) return RS_ERR_NO_PLATFORM;
 
     cl_device_id selected_dev = NULL;
     char dev_name[256] = {0};
@@ -358,62 +358,62 @@ RDNA3_API int RDNA3_CALL rdna3_init(rdna3_context_t* ctx_out) {
         if (selected_dev && (strstr(dev_name, "Radeon") || strstr(dev_name, "AMD") || strstr(dev_name, "gfx"))) break;
     }
 
-    if (!selected_dev) return RDNA3_ERR_NO_DEVICE;
+    if (!selected_dev) return RS_ERR_NO_DEVICE;
 
-    rdna3_context_internal* state = (rdna3_context_internal*)calloc(1, sizeof(rdna3_context_internal));
-    if (!state) return RDNA3_ERR_HOST_ALLOC_FAILED;
+    rs_context_internal* state = (rs_context_internal*)calloc(1, sizeof(rs_context_internal));
+    if (!state) return RS_ERR_HOST_ALLOC_FAILED;
 
     state->device = selected_dev;
     strncpy(state->device_name, dev_name, sizeof(state->device_name) - 1);
 
     cl_int err;
     state->ctx = clCreateContext(NULL, 1, &selected_dev, NULL, NULL, &err);
-    if (err != 0) { free(state); return RDNA3_ERR_CONTEXT_FAILED; }
+    if (err != 0) { free(state); return RS_ERR_CONTEXT_FAILED; }
 
     cl_ulong props[] = { CL_QUEUE_PROPERTIES, CL_QUEUE_PROFILING_ENABLE, 0 };
     state->queue = clCreateCommandQueueWithProperties(state->ctx, selected_dev, props, &err);
     if (err != 0) {
         clReleaseContext(state->ctx);
         free(state);
-        return RDNA3_ERR_QUEUE_FAILED;
+        return RS_ERR_QUEUE_FAILED;
     }
 
-    state->program = clCreateProgramWithSource(state->ctx, 1, &RDNA3_KERNEL_SOURCE, NULL, &err);
+    state->program = clCreateProgramWithSource(state->ctx, 1, &RADEON_SPARSE_KERNEL_SOURCE, NULL, &err);
     const char* opts = "-cl-std=CL2.0 -cl-mad-enable -cl-fast-relaxed-math";
     if (clBuildProgram(state->program, 1, &selected_dev, opts, NULL, NULL) != 0) {
         char log[4096] = {0};
         clGetProgramBuildInfo(state->program, selected_dev, CL_PROGRAM_BUILD_LOG, sizeof(log) - 1, log, NULL);
-        fprintf(stderr, "[RDNA3 AI ENGINE] OpenCL Build Error:\n%s\n", log);
+        fprintf(stderr, "[RadeonSparse] OpenCL Build Error:\n%s\n", log);
         clReleaseProgram(state->program);
         clReleaseCommandQueue(state->queue);
         clReleaseContext(state->ctx);
         free(state);
-        return RDNA3_ERR_PROGRAM_BUILD_FAILED;
+        return RS_ERR_PROGRAM_BUILD_FAILED;
     }
 
     cl_int err1 = 0, err2 = 0, err3 = 0, err4 = 0;
-    state->kernel_dense  = clCreateKernel(state->program, "gemv_rdna3_infinity_stream", &err1);
-    state->kernel_gather = clCreateKernel(state->program, "gemv_rdna3_contextual_gather", &err2);
-    state->kernel_zero   = clCreateKernel(state->program, "rdna3_zero_vector", &err3);
-    state->kernel_gate   = clCreateKernel(state->program, "rdna3_activation_gate", &err4);
+    state->kernel_dense  = clCreateKernel(state->program, "gemv_radeon_dense", &err1);
+    state->kernel_gather = clCreateKernel(state->program, "gemv_radeon_sparse_gather", &err2);
+    state->kernel_zero   = clCreateKernel(state->program, "radeon_zero_vector", &err3);
+    state->kernel_gate   = clCreateKernel(state->program, "radeon_activation_gate", &err4);
 
     if (err1 != 0 || err2 != 0 || err3 != 0 || err4 != 0) {
-        rdna3_shutdown((rdna3_context_t)state);
-        return RDNA3_ERR_KERNEL_FAILED;
+        rs_shutdown((rs_context_t)state);
+        return RS_ERR_KERNEL_FAILED;
     }
 
-    *ctx_out = (rdna3_context_t)state;
-    return RDNA3_SUCCESS;
+    *ctx_out = (rs_context_t)state;
+    return RS_SUCCESS;
 }
 
-RDNA3_API const char* RDNA3_CALL rdna3_get_device_name(rdna3_context_t ctx) {
+RS_API const char* RS_CALL rs_get_device_name(rs_context_t ctx) {
     if (!ctx) return "None";
-    return ((rdna3_context_internal*)ctx)->device_name;
+    return ((rs_context_internal*)ctx)->device_name;
 }
 
-RDNA3_API void RDNA3_CALL rdna3_shutdown(rdna3_context_t ctx) {
+RS_API void RS_CALL rs_shutdown(rs_context_t ctx) {
     if (!ctx) return;
-    rdna3_context_internal* state = (rdna3_context_internal*)ctx;
+    rs_context_internal* state = (rs_context_internal*)ctx;
     if (state->kernel_dense)  clReleaseKernel(state->kernel_dense);
     if (state->kernel_gather) clReleaseKernel(state->kernel_gather);
     if (state->kernel_zero)   clReleaseKernel(state->kernel_zero);
@@ -424,14 +424,14 @@ RDNA3_API void RDNA3_CALL rdna3_shutdown(rdna3_context_t ctx) {
     free(state);
 }
 
-RDNA3_API rdna3_tensor_t RDNA3_CALL rdna3_create_weights_int8(
-    rdna3_context_t ctx,
+RS_API rs_tensor_t RS_CALL rs_create_weights_int8(
+    rs_context_t ctx,
     int rows,
     int cols,
     const signed char* host_data
 ) {
     if (!ctx || rows <= 0 || cols <= 0) return NULL;
-    rdna3_context_internal* state = (rdna3_context_internal*)ctx;
+    rs_context_internal* state = (rs_context_internal*)ctx;
     size_t bytes = (size_t)rows * cols * sizeof(signed char);
 
     cl_int err;
@@ -446,7 +446,7 @@ RDNA3_API rdna3_tensor_t RDNA3_CALL rdna3_create_weights_int8(
         }
     }
 
-    rdna3_tensor_internal* t = (rdna3_tensor_internal*)malloc(sizeof(rdna3_tensor_internal));
+    rs_tensor_internal* t = (rs_tensor_internal*)malloc(sizeof(rs_tensor_internal));
     if (!t) { clReleaseMemObject(buf); return NULL; }
 
     t->buffer = buf;
@@ -454,16 +454,16 @@ RDNA3_API rdna3_tensor_t RDNA3_CALL rdna3_create_weights_int8(
     t->rows = rows;
     t->cols = cols;
     t->type = 1;
-    return (rdna3_tensor_t)t;
+    return (rs_tensor_t)t;
 }
 
-RDNA3_API rdna3_tensor_t RDNA3_CALL rdna3_create_vector_fp32(
-    rdna3_context_t ctx,
+RS_API rs_tensor_t RS_CALL rs_create_vector_fp32(
+    rs_context_t ctx,
     int size,
     const float* host_data
 ) {
     if (!ctx || size <= 0) return NULL;
-    rdna3_context_internal* state = (rdna3_context_internal*)ctx;
+    rs_context_internal* state = (rs_context_internal*)ctx;
     size_t bytes = (size_t)size * sizeof(float);
 
     cl_int err;
@@ -478,7 +478,7 @@ RDNA3_API rdna3_tensor_t RDNA3_CALL rdna3_create_vector_fp32(
         }
     }
 
-    rdna3_tensor_internal* t = (rdna3_tensor_internal*)malloc(sizeof(rdna3_tensor_internal));
+    rs_tensor_internal* t = (rs_tensor_internal*)malloc(sizeof(rs_tensor_internal));
     if (!t) { clReleaseMemObject(buf); return NULL; }
 
     t->buffer = buf;
@@ -486,16 +486,16 @@ RDNA3_API rdna3_tensor_t RDNA3_CALL rdna3_create_vector_fp32(
     t->rows = size;
     t->cols = 1;
     t->type = 0;
-    return (rdna3_tensor_t)t;
+    return (rs_tensor_t)t;
 }
 
-RDNA3_API rdna3_tensor_t RDNA3_CALL rdna3_create_indices_int32(
-    rdna3_context_t ctx,
+RS_API rs_tensor_t RS_CALL rs_create_indices_int32(
+    rs_context_t ctx,
     int max_indices,
     const int* host_indices
 ) {
     if (!ctx || max_indices <= 0) return NULL;
-    rdna3_context_internal* state = (rdna3_context_internal*)ctx;
+    rs_context_internal* state = (rs_context_internal*)ctx;
     size_t bytes = (size_t)max_indices * sizeof(int);
 
     cl_int err;
@@ -510,7 +510,7 @@ RDNA3_API rdna3_tensor_t RDNA3_CALL rdna3_create_indices_int32(
         }
     }
 
-    rdna3_tensor_internal* t = (rdna3_tensor_internal*)malloc(sizeof(rdna3_tensor_internal));
+    rs_tensor_internal* t = (rs_tensor_internal*)malloc(sizeof(rs_tensor_internal));
     if (!t) { clReleaseMemObject(buf); return NULL; }
 
     t->buffer = buf;
@@ -518,10 +518,10 @@ RDNA3_API rdna3_tensor_t RDNA3_CALL rdna3_create_indices_int32(
     t->rows = max_indices;
     t->cols = 1;
     t->type = 2;
-    return (rdna3_tensor_t)t;
+    return (rs_tensor_t)t;
 }
 
-RDNA3_API int RDNA3_CALL rdna3_quantize_fp32_to_int8(
+RS_API int RS_CALL rs_quantize_fp32_to_int8(
     const float* fp32_weights,
     int rows,
     int cols,
@@ -529,7 +529,7 @@ RDNA3_API int RDNA3_CALL rdna3_quantize_fp32_to_int8(
     float* out_scales
 ) {
     if (!fp32_weights || !out_int8 || !out_scales || rows <= 0 || cols <= 0) {
-        return RDNA3_ERR_INVALID_ARG;
+        return RS_ERR_INVALID_ARG;
     }
 
     for (int r = 0; r < rows; r++) {
@@ -558,19 +558,19 @@ RDNA3_API int RDNA3_CALL rdna3_quantize_fp32_to_int8(
             }
         }
     }
-    return RDNA3_SUCCESS;
+    return RS_SUCCESS;
 }
 
-RDNA3_API int RDNA3_CALL rdna3_create_weights_from_fp32(
-    rdna3_context_t ctx,
+RS_API int RS_CALL rs_create_weights_from_fp32(
+    rs_context_t ctx,
     int rows,
     int cols,
     const float* fp32_weights,
-    rdna3_tensor_t* out_weights_int8,
-    rdna3_tensor_t* out_scales_fp32
+    rs_tensor_t* out_weights_int8,
+    rs_tensor_t* out_scales_fp32
 ) {
     if (!ctx || !fp32_weights || !out_weights_int8 || !out_scales_fp32 || rows <= 0 || cols <= 0) {
-        return RDNA3_ERR_INVALID_ARG;
+        return RS_ERR_INVALID_ARG;
     }
     *out_weights_int8 = NULL;
     *out_scales_fp32 = NULL;
@@ -580,34 +580,34 @@ RDNA3_API int RDNA3_CALL rdna3_create_weights_from_fp32(
     if (!host_q || !host_s) {
         free(host_q);
         free(host_s);
-        return RDNA3_ERR_HOST_ALLOC_FAILED;
+        return RS_ERR_HOST_ALLOC_FAILED;
     }
 
-    int q_err = rdna3_quantize_fp32_to_int8(fp32_weights, rows, cols, host_q, host_s);
-    if (q_err != RDNA3_SUCCESS) {
+    int q_err = rs_quantize_fp32_to_int8(fp32_weights, rows, cols, host_q, host_s);
+    if (q_err != RS_SUCCESS) {
         free(host_q);
         free(host_s);
         return q_err;
     }
 
-    rdna3_tensor_t d_w = rdna3_create_weights_int8(ctx, rows, cols, host_q);
-    rdna3_tensor_t d_s = rdna3_create_vector_fp32(ctx, rows, host_s);
+    rs_tensor_t d_w = rs_create_weights_int8(ctx, rows, cols, host_q);
+    rs_tensor_t d_s = rs_create_vector_fp32(ctx, rows, host_s);
 
     free(host_q);
     free(host_s);
 
     if (!d_w || !d_s) {
-        if (d_w) rdna3_free_tensor(ctx, d_w);
-        if (d_s) rdna3_free_tensor(ctx, d_s);
-        return RDNA3_ERR_VRAM_ALLOC_FAILED;
+        if (d_w) rs_free_tensor(ctx, d_w);
+        if (d_s) rs_free_tensor(ctx, d_s);
+        return RS_ERR_VRAM_ALLOC_FAILED;
     }
 
     *out_weights_int8 = d_w;
     *out_scales_fp32 = d_s;
-    return RDNA3_SUCCESS;
+    return RS_SUCCESS;
 }
 
-RDNA3_API int RDNA3_CALL rdna3_extract_active_indices(
+RS_API int RS_CALL rs_extract_active_indices(
     const float* host_activations,
     int size,
     float threshold,
@@ -624,61 +624,61 @@ RDNA3_API int RDNA3_CALL rdna3_extract_active_indices(
     return count;
 }
 
-RDNA3_API int RDNA3_CALL rdna3_write_vector_fp32(
-    rdna3_context_t ctx,
-    rdna3_tensor_t tensor,
+RS_API int RS_CALL rs_write_vector_fp32(
+    rs_context_t ctx,
+    rs_tensor_t tensor,
     const float* host_src,
     int count
 ) {
-    if (!ctx || !tensor || !host_src || count <= 0) return RDNA3_ERR_INVALID_ARG;
-    rdna3_context_internal* state = (rdna3_context_internal*)ctx;
-    rdna3_tensor_internal* t = (rdna3_tensor_internal*)tensor;
+    if (!ctx || !tensor || !host_src || count <= 0) return RS_ERR_INVALID_ARG;
+    rs_context_internal* state = (rs_context_internal*)ctx;
+    rs_tensor_internal* t = (rs_tensor_internal*)tensor;
 
-    if (count > t->rows) return RDNA3_ERR_DIMENSION_MISMATCH;
+    if (count > t->rows) return RS_ERR_DIMENSION_MISMATCH;
 
     cl_int err = clEnqueueWriteBuffer(state->queue, t->buffer, 1, 0, (size_t)count * sizeof(float), host_src, 0, NULL, NULL);
-    return (err == 0) ? RDNA3_SUCCESS : RDNA3_ERR_TRANSFER_FAILED;
+    return (err == 0) ? RS_SUCCESS : RS_ERR_TRANSFER_FAILED;
 }
 
-RDNA3_API int RDNA3_CALL rdna3_write_indices_int32(
-    rdna3_context_t ctx,
-    rdna3_tensor_t indices_tensor,
+RS_API int RS_CALL rs_write_indices_int32(
+    rs_context_t ctx,
+    rs_tensor_t indices_tensor,
     const int* host_indices,
     int num_active
 ) {
-    if (!ctx || !indices_tensor || !host_indices || num_active <= 0) return RDNA3_ERR_INVALID_ARG;
-    rdna3_context_internal* state = (rdna3_context_internal*)ctx;
-    rdna3_tensor_internal* t = (rdna3_tensor_internal*)indices_tensor;
+    if (!ctx || !indices_tensor || !host_indices || num_active <= 0) return RS_ERR_INVALID_ARG;
+    rs_context_internal* state = (rs_context_internal*)ctx;
+    rs_tensor_internal* t = (rs_tensor_internal*)indices_tensor;
 
-    if (num_active > t->rows) return RDNA3_ERR_DIMENSION_MISMATCH;
+    if (num_active > t->rows) return RS_ERR_DIMENSION_MISMATCH;
 
     cl_int err = clEnqueueWriteBuffer(state->queue, t->buffer, 1, 0, (size_t)num_active * sizeof(int), host_indices, 0, NULL, NULL);
-    return (err == 0) ? RDNA3_SUCCESS : RDNA3_ERR_TRANSFER_FAILED;
+    return (err == 0) ? RS_SUCCESS : RS_ERR_TRANSFER_FAILED;
 }
 
-RDNA3_API int RDNA3_CALL rdna3_read_vector_fp32(
-    rdna3_context_t ctx,
-    rdna3_tensor_t tensor,
+RS_API int RS_CALL rs_read_vector_fp32(
+    rs_context_t ctx,
+    rs_tensor_t tensor,
     float* host_dst
 ) {
-    if (!ctx || !tensor || !host_dst) return RDNA3_ERR_INVALID_ARG;
-    rdna3_context_internal* state = (rdna3_context_internal*)ctx;
-    rdna3_tensor_internal* t = (rdna3_tensor_internal*)tensor;
+    if (!ctx || !tensor || !host_dst) return RS_ERR_INVALID_ARG;
+    rs_context_internal* state = (rs_context_internal*)ctx;
+    rs_tensor_internal* t = (rs_tensor_internal*)tensor;
 
     cl_int err = clEnqueueReadBuffer(state->queue, t->buffer, 1, 0, t->size_bytes, host_dst, 0, NULL, NULL);
-    if (err != 0) return RDNA3_ERR_TRANSFER_FAILED;
+    if (err != 0) return RS_ERR_TRANSFER_FAILED;
 
     clFinish(state->queue);
-    return RDNA3_SUCCESS;
+    return RS_SUCCESS;
 }
 
-RDNA3_API int RDNA3_CALL rdna3_zero_vector_fp32(
-    rdna3_context_t ctx,
-    rdna3_tensor_t tensor
+RS_API int RS_CALL rs_zero_vector_fp32(
+    rs_context_t ctx,
+    rs_tensor_t tensor
 ) {
-    if (!ctx || !tensor) return RDNA3_ERR_INVALID_ARG;
-    rdna3_context_internal* state = (rdna3_context_internal*)ctx;
-    rdna3_tensor_internal* t = (rdna3_tensor_internal*)tensor;
+    if (!ctx || !tensor) return RS_ERR_INVALID_ARG;
+    rs_context_internal* state = (rs_context_internal*)ctx;
+    rs_tensor_internal* t = (rs_tensor_internal*)tensor;
 
     int size = t->rows;
     clSetKernelArg(state->kernel_zero, 0, sizeof(cl_mem), &t->buffer);
@@ -688,36 +688,36 @@ RDNA3_API int RDNA3_CALL rdna3_zero_vector_fp32(
     cl_size_t global_size = ((cl_size_t)(size + 255) / 256) * 256;
 
     cl_int err = clEnqueueNDRangeKernel(state->queue, state->kernel_zero, 1, NULL, &global_size, &local_size, 0, NULL, NULL);
-    if (err != 0) return RDNA3_ERR_EXECUTION_FAILED;
+    if (err != 0) return RS_ERR_EXECUTION_FAILED;
 
     clFinish(state->queue);
-    return RDNA3_SUCCESS;
+    return RS_SUCCESS;
 }
 
-RDNA3_API void RDNA3_CALL rdna3_free_tensor(rdna3_context_t ctx, rdna3_tensor_t tensor) {
+RS_API void RS_CALL rs_free_tensor(rs_context_t ctx, rs_tensor_t tensor) {
     (void)ctx;
     if (!tensor) return;
-    rdna3_tensor_internal* t = (rdna3_tensor_internal*)tensor;
+    rs_tensor_internal* t = (rs_tensor_internal*)tensor;
     if (t->buffer) clReleaseMemObject(t->buffer);
     free(t);
 }
 
-RDNA3_API int RDNA3_CALL rdna3_gemv_int8(
-    rdna3_context_t ctx,
-    rdna3_tensor_t weights,
-    rdna3_tensor_t input_x,
-    rdna3_tensor_t scales,
-    rdna3_tensor_t output_y
+RS_API int RS_CALL rs_gemv_int8(
+    rs_context_t ctx,
+    rs_tensor_t weights,
+    rs_tensor_t input_x,
+    rs_tensor_t scales,
+    rs_tensor_t output_y
 ) {
-    if (!ctx || !weights || !input_x || !scales || !output_y) return RDNA3_ERR_INVALID_ARG;
-    rdna3_context_internal* state = (rdna3_context_internal*)ctx;
-    rdna3_tensor_internal* tW = (rdna3_tensor_internal*)weights;
-    rdna3_tensor_internal* tX = (rdna3_tensor_internal*)input_x;
-    rdna3_tensor_internal* tS = (rdna3_tensor_internal*)scales;
-    rdna3_tensor_internal* tY = (rdna3_tensor_internal*)output_y;
+    if (!ctx || !weights || !input_x || !scales || !output_y) return RS_ERR_INVALID_ARG;
+    rs_context_internal* state = (rs_context_internal*)ctx;
+    rs_tensor_internal* tW = (rs_tensor_internal*)weights;
+    rs_tensor_internal* tX = (rs_tensor_internal*)input_x;
+    rs_tensor_internal* tS = (rs_tensor_internal*)scales;
+    rs_tensor_internal* tY = (rs_tensor_internal*)output_y;
 
     if (tW->cols != tX->rows || tW->rows != tS->rows || tW->rows != tY->rows) {
-        return RDNA3_ERR_DIMENSION_MISMATCH;
+        return RS_ERR_DIMENSION_MISMATCH;
     }
 
     int M = tW->rows;
@@ -734,33 +734,33 @@ RDNA3_API int RDNA3_CALL rdna3_gemv_int8(
     cl_size_t global_size = (cl_size_t)M * local_size;
 
     cl_int err = clEnqueueNDRangeKernel(state->queue, state->kernel_dense, 1, NULL, &global_size, &local_size, 0, NULL, NULL);
-    if (err != 0) return RDNA3_ERR_EXECUTION_FAILED;
+    if (err != 0) return RS_ERR_EXECUTION_FAILED;
 
     clFinish(state->queue);
-    return RDNA3_SUCCESS;
+    return RS_SUCCESS;
 }
 
-RDNA3_API int RDNA3_CALL rdna3_gather_gemv_int8(
-    rdna3_context_t ctx,
-    rdna3_tensor_t weights,
-    rdna3_tensor_t input_x,
-    rdna3_tensor_t scales,
-    rdna3_tensor_t output_y,
-    rdna3_tensor_t active_indices,
+RS_API int RS_CALL rs_gather_gemv_int8(
+    rs_context_t ctx,
+    rs_tensor_t weights,
+    rs_tensor_t input_x,
+    rs_tensor_t scales,
+    rs_tensor_t output_y,
+    rs_tensor_t active_indices,
     int num_active
 ) {
     if (!ctx || !weights || !input_x || !scales || !output_y || !active_indices || num_active <= 0) {
-        return RDNA3_ERR_INVALID_ARG;
+        return RS_ERR_INVALID_ARG;
     }
-    rdna3_context_internal* state = (rdna3_context_internal*)ctx;
-    rdna3_tensor_internal* tW   = (rdna3_tensor_internal*)weights;
-    rdna3_tensor_internal* tX   = (rdna3_tensor_internal*)input_x;
-    rdna3_tensor_internal* tS   = (rdna3_tensor_internal*)scales;
-    rdna3_tensor_internal* tY   = (rdna3_tensor_internal*)output_y;
-    rdna3_tensor_internal* tIdx = (rdna3_tensor_internal*)active_indices;
+    rs_context_internal* state = (rs_context_internal*)ctx;
+    rs_tensor_internal* tW   = (rs_tensor_internal*)weights;
+    rs_tensor_internal* tX   = (rs_tensor_internal*)input_x;
+    rs_tensor_internal* tS   = (rs_tensor_internal*)scales;
+    rs_tensor_internal* tY   = (rs_tensor_internal*)output_y;
+    rs_tensor_internal* tIdx = (rs_tensor_internal*)active_indices;
 
     if (tW->cols != tX->rows || tW->rows != tS->rows || tW->rows != tY->rows || num_active > tIdx->rows) {
-        return RDNA3_ERR_DIMENSION_MISMATCH;
+        return RS_ERR_DIMENSION_MISMATCH;
     }
 
     int M = tW->rows;
@@ -779,27 +779,27 @@ RDNA3_API int RDNA3_CALL rdna3_gather_gemv_int8(
     cl_size_t global_size = (cl_size_t)num_active * local_size;
 
     cl_int err = clEnqueueNDRangeKernel(state->queue, state->kernel_gather, 1, NULL, &global_size, &local_size, 0, NULL, NULL);
-    if (err != 0) return RDNA3_ERR_EXECUTION_FAILED;
+    if (err != 0) return RS_ERR_EXECUTION_FAILED;
 
     clFinish(state->queue);
-    return RDNA3_SUCCESS;
+    return RS_SUCCESS;
 }
 
-RDNA3_API int RDNA3_CALL rdna3_gate_activations_fp32(
-    rdna3_context_t ctx,
-    rdna3_tensor_t gate_vec,
-    rdna3_tensor_t up_vec,
-    rdna3_tensor_t output_h,
+RS_API int RS_CALL rs_gate_activations_fp32(
+    rs_context_t ctx,
+    rs_tensor_t gate_vec,
+    rs_tensor_t up_vec,
+    rs_tensor_t output_h,
     float threshold
 ) {
-    if (!ctx || !gate_vec || !up_vec || !output_h) return RDNA3_ERR_INVALID_ARG;
-    rdna3_context_internal* state = (rdna3_context_internal*)ctx;
-    rdna3_tensor_internal* tG = (rdna3_tensor_internal*)gate_vec;
-    rdna3_tensor_internal* tU = (rdna3_tensor_internal*)up_vec;
-    rdna3_tensor_internal* tH = (rdna3_tensor_internal*)output_h;
+    if (!ctx || !gate_vec || !up_vec || !output_h) return RS_ERR_INVALID_ARG;
+    rs_context_internal* state = (rs_context_internal*)ctx;
+    rs_tensor_internal* tG = (rs_tensor_internal*)gate_vec;
+    rs_tensor_internal* tU = (rs_tensor_internal*)up_vec;
+    rs_tensor_internal* tH = (rs_tensor_internal*)output_h;
 
     if (tG->rows != tU->rows || tG->rows != tH->rows) {
-        return RDNA3_ERR_DIMENSION_MISMATCH;
+        return RS_ERR_DIMENSION_MISMATCH;
     }
 
     int size = tG->rows;
@@ -813,27 +813,27 @@ RDNA3_API int RDNA3_CALL rdna3_gate_activations_fp32(
     cl_size_t global_size = ((cl_size_t)(size + 255) / 256) * 256;
 
     cl_int err = clEnqueueNDRangeKernel(state->queue, state->kernel_gate, 1, NULL, &global_size, &local_size, 0, NULL, NULL);
-    if (err != 0) return RDNA3_ERR_EXECUTION_FAILED;
+    if (err != 0) return RS_ERR_EXECUTION_FAILED;
 
     clFinish(state->queue);
-    return RDNA3_SUCCESS;
+    return RS_SUCCESS;
 }
 
-RDNA3_API double RDNA3_CALL rdna3_benchmark_gemv(
-    rdna3_context_t ctx,
-    rdna3_tensor_t weights,
-    rdna3_tensor_t input_x,
-    rdna3_tensor_t scales,
-    rdna3_tensor_t output_y,
+RS_API double RS_CALL rs_benchmark_gemv(
+    rs_context_t ctx,
+    rs_tensor_t weights,
+    rs_tensor_t input_x,
+    rs_tensor_t scales,
+    rs_tensor_t output_y,
     int iterations,
     double* out_bandwidth_gb_s
 ) {
     if (!ctx || !weights || !input_x || !scales || !output_y || iterations <= 0) return 0.0;
-    rdna3_context_internal* state = (rdna3_context_internal*)ctx;
-    rdna3_tensor_internal* tW = (rdna3_tensor_internal*)weights;
-    rdna3_tensor_internal* tX = (rdna3_tensor_internal*)input_x;
-    rdna3_tensor_internal* tS = (rdna3_tensor_internal*)scales;
-    rdna3_tensor_internal* tY = (rdna3_tensor_internal*)output_y;
+    rs_context_internal* state = (rs_context_internal*)ctx;
+    rs_tensor_internal* tW = (rs_tensor_internal*)weights;
+    rs_tensor_internal* tX = (rs_tensor_internal*)input_x;
+    rs_tensor_internal* tS = (rs_tensor_internal*)scales;
+    rs_tensor_internal* tY = (rs_tensor_internal*)output_y;
 
     if (tW->cols != tX->rows || tW->rows != tS->rows || tW->rows != tY->rows) return 0.0;
 
@@ -886,13 +886,13 @@ RDNA3_API double RDNA3_CALL rdna3_benchmark_gemv(
     return avg_time_us;
 }
 
-RDNA3_API double RDNA3_CALL rdna3_benchmark_gather_gemv(
-    rdna3_context_t ctx,
-    rdna3_tensor_t weights,
-    rdna3_tensor_t input_x,
-    rdna3_tensor_t scales,
-    rdna3_tensor_t output_y,
-    rdna3_tensor_t active_indices,
+RS_API double RS_CALL rs_benchmark_gather_gemv(
+    rs_context_t ctx,
+    rs_tensor_t weights,
+    rs_tensor_t input_x,
+    rs_tensor_t scales,
+    rs_tensor_t output_y,
+    rs_tensor_t active_indices,
     int num_active,
     int iterations,
     double* out_physical_bw_gb_s,
@@ -901,12 +901,12 @@ RDNA3_API double RDNA3_CALL rdna3_benchmark_gather_gemv(
     if (!ctx || !weights || !input_x || !scales || !output_y || !active_indices || num_active <= 0 || iterations <= 0) {
         return 0.0;
     }
-    rdna3_context_internal* state = (rdna3_context_internal*)ctx;
-    rdna3_tensor_internal* tW   = (rdna3_tensor_internal*)weights;
-    rdna3_tensor_internal* tX   = (rdna3_tensor_internal*)input_x;
-    rdna3_tensor_internal* tS   = (rdna3_tensor_internal*)scales;
-    rdna3_tensor_internal* tY   = (rdna3_tensor_internal*)output_y;
-    rdna3_tensor_internal* tIdx = (rdna3_tensor_internal*)active_indices;
+    rs_context_internal* state = (rs_context_internal*)ctx;
+    rs_tensor_internal* tW   = (rs_tensor_internal*)weights;
+    rs_tensor_internal* tX   = (rs_tensor_internal*)input_x;
+    rs_tensor_internal* tS   = (rs_tensor_internal*)scales;
+    rs_tensor_internal* tY   = (rs_tensor_internal*)output_y;
+    rs_tensor_internal* tIdx = (rs_tensor_internal*)active_indices;
 
     if (tW->cols != tX->rows || tW->rows != tS->rows || tW->rows != tY->rows || num_active > tIdx->rows) {
         return 0.0;

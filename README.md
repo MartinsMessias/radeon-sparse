@@ -15,15 +15,15 @@ Large Language Models (LLMs) running at `batch_size = 1` (local autoregressive g
 
 **RadeonSparse (`radeon-sparse`)** eliminates this memory bottleneck at the hardware level across **AMD Radeon GPUs** (RX 6000, RX 7000, RX 9000 series, and Radeon APUs) with zero external dependencies (no multi-gigabyte ROCm SDK required — runs directly via the native driver `OpenCL.dll` / `libOpenCL.so`):
 
-1. **Vectorized Wavefront INT8 GEMV (`gemv_rdna3_infinity_stream`):** Uses coalesced 64-bit vector loads (`vload8`), hardware `convert_float8` instructions, conflict-free Local Data Share (LDS) tree reduction, and arbitrary-$K$ tail handling to saturate the memory bus of any target Radeon GPU.
-2. **Contextual Sparsity `Gather-GEMV` (`gemv_rdna3_contextual_gather`):** Dynamically fetches *only* the active FFN rows (`15%–25%`) from VRAM. By skipping 75%–85% of inactive neurons, it drastically reduces external VRAM traffic and shrinks the active working set so it can reside inside the GPU's on-die **AMD Infinity Cache (L3)** (whether 32 MB, 64 MB, or 96 MB).
-3. **Ergonomic C & Python SDK:** Automatic FP32-to-INT8 per-channel quantization (`rdna3_create_weights_from_fp32`), in-place VRAM buffer updates, and a drop-in Python `RadeonSparseEngine` + `SparseLinearLayer` SDK.
+1. **Vectorized Wavefront INT8 GEMV (`gemv_radeon_dense`):** Uses coalesced 64-bit vector loads (`vload8`), hardware `convert_float8` instructions, conflict-free Local Data Share (LDS) tree reduction, and arbitrary-$K$ tail handling to saturate the memory bus of any target Radeon GPU.
+2. **Contextual Sparsity `Gather-GEMV` (`gemv_radeon_sparse_gather`):** Dynamically fetches *only* the active FFN rows (`15%–25%`) from VRAM. By skipping 75%–85% of inactive neurons, it drastically reduces external VRAM traffic and shrinks the active working set so it can reside inside the GPU's on-die **AMD Infinity Cache (L3)** (whether 32 MB, 64 MB, or 96 MB).
+3. **Ergonomic C & Python SDK:** Automatic FP32-to-INT8 per-channel quantization (`rs_create_weights_from_fp32`), in-place VRAM buffer updates, and a drop-in Python `RadeonSparseEngine` + `SparseLinearLayer` SDK.
 
 ---
 
-## 📊 Reference Benchmarks (`rdna3-bench` / `llama-bench` Format)
+## 📊 Reference Benchmarks (`radeon-sparse-bench` / `llama-bench` Format)
 
-> **Reference Test System:** The benchmarks below were captured on an **AMD Radeon RX 7800 XT (16 GB GDDR6, `gfx1101`)** using `bin/rdna3-bench` (`CL_QUEUE_PROFILING_ENABLE` hardware timers, 150 iterations). Run `rdna3-bench` on your own Radeon GPU to generate tables for your hardware.
+> **Reference Test System:** The benchmarks below were captured on an **AMD Radeon RX 7800 XT (16 GB GDDR6, `gfx1101`)** using `bin/radeon-sparse-bench` (`CL_QUEUE_PROFILING_ENABLE` hardware timers, 150 iterations). Run `radeon-sparse-bench` on your own Radeon GPU to generate tables for your hardware.
 
 ### 1. Kernel-Level FFN Projection Benchmark (`W_down` / `W_up` Matrix)
 
@@ -69,14 +69,14 @@ Large Language Models (LLMs) running at `batch_size = 1` (local autoregressive g
 **Windows (MSVC auto-detected via `vswhere`):**
 ```cmd
 build_windows.bat
-bin\rdna3-bench.exe
+bin\radeon-sparse-bench.exe
 ```
 
 **Linux (GCC / Clang):**
 ```bash
 chmod +x build_linux.sh
 ./build_linux.sh
-./bin/rdna3-bench
+./bin/radeon-sparse-bench
 ```
 
 **CMake (Cross-Platform):**
@@ -104,7 +104,7 @@ with RadeonSparseEngine() as engine:
 
     layer = engine.create_layer_from_float(weights_fp32)
 
-    # 1. Dense Wave64 GEMV
+    # 1. Dense GEMV
     y_dense = layer.forward(x)
 
     # 2. Contextual Sparse Gather-GEMV (compute only top 20% active rows)
@@ -114,28 +114,28 @@ with RadeonSparseEngine() as engine:
 
 ---
 
-### 3. Use in C / C++ (`include/rdna3_ai_engine.h`)
+### 3. Use in C / C++ (`include/radeon_sparse.h`)
 
 ```c
-#include "rdna3_ai_engine.h"
+#include "radeon_sparse.h"
 
-rdna3_context_t ctx;
-rdna3_init(&ctx);
+rs_context_t ctx;
+rs_init(&ctx);
 
 /* Quantize FP32 weights [M x K] and upload to VRAM in one call */
-rdna3_tensor_t d_W, d_S;
-rdna3_create_weights_from_fp32(ctx, M, K, host_fp32_weights, &d_W, &d_S);
+rs_tensor_t d_W, d_S;
+rs_create_weights_from_fp32(ctx, M, K, host_fp32_weights, &d_W, &d_S);
 
-rdna3_tensor_t d_X   = rdna3_create_vector_fp32(ctx, K, host_x);
-rdna3_tensor_t d_Y   = rdna3_create_vector_fp32(ctx, M, NULL);
-rdna3_tensor_t d_Idx = rdna3_create_indices_int32(ctx, num_active, host_active_indices);
+rs_tensor_t d_X   = rs_create_vector_fp32(ctx, K, host_x);
+rs_tensor_t d_Y   = rs_create_vector_fp32(ctx, M, NULL);
+rs_tensor_t d_Idx = rs_create_indices_int32(ctx, num_active, host_active_indices);
 
 /* Execute Dense GEMV or Sparse Gather-GEMV */
-rdna3_gemv_int8(ctx, d_W, d_X, d_S, d_Y);
-rdna3_gather_gemv_int8(ctx, d_W, d_X, d_S, d_Y, d_Idx, num_active);
+rs_gemv_int8(ctx, d_W, d_X, d_S, d_Y);
+rs_gather_gemv_int8(ctx, d_W, d_X, d_S, d_Y, d_Idx, num_active);
 
-rdna3_read_vector_fp32(ctx, d_Y, host_y);
-rdna3_shutdown(ctx);
+rs_read_vector_fp32(ctx, d_Y, host_y);
+rs_shutdown(ctx);
 ```
 
 ---
@@ -145,21 +145,20 @@ rdna3_shutdown(ctx);
 ```text
 radeon-sparse/
 ├── include/
-│   └── rdna3_ai_engine.h            # Public C/C++ API header (Dense, Gather-GEMV, Auto-Quant)
+│   └── radeon_sparse.h              # Public C/C++ API header (rs_* functions)
 ├── src/
-│   └── rdna3_ai_engine.c            # OpenCL dynamic loader + JIT Wave64 RDNA 3/4 kernels
+│   └── radeon_sparse.c              # OpenCL dynamic loader + JIT RadeonSparse kernels
 ├── python/
 │   ├── __init__.py
-│   ├── radeon_sparse.py             # High-level RadeonSparseEngine & SparseLinearLayer SDK
-│   └── rdna3_engine.py              # Core ctypes implementation
+│   └── radeon_sparse.py             # High-level RadeonSparseEngine & SparseLinearLayer SDK
 ├── benchmarks/
-│   ├── rdna3_bench.c                # Official llama-bench style CLI (-o md | csv | json)
+│   ├── radeon_sparse_bench.c        # Official llama-bench style CLI (-o md | csv | json)
 │   └── benchmark_swiglu_sparsity.py # Mathematical SwiGLU energy & cosine similarity proof
 ├── examples/
 │   ├── use_in_c.c                   # C quickstart & validation example
 │   └── use_in_python.py             # Python SDK quickstart example
 ├── docs/
-│   ├── ARCHITECTURE_AND_THEORY.md   # Deep-dive into RDNA 3/4 Wave64 & Contextual Sparsity
+│   ├── ARCHITECTURE_AND_THEORY.md   # Deep-dive into Wavefront GEMV & Contextual Sparsity
 │   └── BENCHMARKS.md                # Full benchmark methodology & llama.cpp comparisons
 ├── CMakeLists.txt                   # Cross-platform CMake build configuration
 ├── build_windows.bat                # One-click Windows MSVC build script

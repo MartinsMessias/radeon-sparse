@@ -1,6 +1,6 @@
-# 📊 Official Benchmarks & Methodology (`rdna3-bench`)
+# 📊 Official Benchmarks & Methodology (`radeon-sparse-bench`)
 
-All benchmarks in this repository follow the standard `llama-bench` reporting methodology and can be reproduced on any AMD Radeon RDNA 3 (`RX 7000`) or RDNA 4 (`RX 9000`) GPU using the compiled `rdna3-bench` binary.
+All benchmarks in this repository follow the standard `llama-bench` reporting methodology and can be reproduced on any AMD Radeon GPU using the compiled `radeon-sparse-bench` binary.
 
 ---
 
@@ -8,28 +8,25 @@ All benchmarks in this repository follow the standard `llama-bench` reporting me
 
 ```bash
 # Default: GitHub Markdown tables
-./bin/rdna3-bench
+./bin/radeon-sparse-bench
 
 # Export as CSV for spreadsheets / plotting
-./bin/rdna3-bench -o csv > results.csv
+./bin/radeon-sparse-bench -o csv > results.csv
 
 # Export as JSON for automated CI pipelines
-./bin/rdna3-bench -o json > results.json
+./bin/radeon-sparse-bench -o json > results.json
 ```
 
 ---
 
-## 2. Test Hardware & Environment
+## 2. Reference Test Hardware & Environment
 
-- **GPU:** AMD Radeon RX 7800 XT (`gfx1101`, Navi 32 XT)
-- **Compute Units:** 60 CUs (3,840 Stream Processors, Dual-Issue Wave64)
-- **Infinity Cache (L3):** 64 MB (2nd Gen AMD Infinity Cache)
-- **VRAM:** 16 GB GDDR6 (256-bit bus, 19.5 Gbps, **624.0 GB/s** peak physical bandwidth)
+- **Reference GPU Tested:** AMD Radeon RX 7800 XT (`gfx1101`, 16 GB GDDR6, 64 MB L3 Infinity Cache, 624.0 GB/s physical VRAM bus)
 - **Timing Mechanism:** Hardware command-queue profiling (`CL_QUEUE_PROFILING_ENABLE`, `CL_PROFILING_COMMAND_START` $\to$ `CL_PROFILING_COMMAND_END`), excluding host OS jitter.
 
 ---
 
-## 3. Kernel-Level FFN Projection Results (`gfx1101`)
+## 3. Kernel-Level FFN Projection Results (Reference GPU: `gfx1101`)
 
 | model | layer dim `[M x K]` | size | backend | mode | latency (us) | phys bw (GB/s) | eff bw (GB/s) | speedup |
 | :--- | :--- | ---: | :--- | :--- | ---: | ---: | ---: | ---: |
@@ -46,12 +43,9 @@ All benchmarks in this repository follow the standard `llama-bench` reporting me
 | Qwen-3.6-27B-Reasoning | `27648 x 5120` | 135.0 MiB | OpenCL (gfx1101) | **Gather-GEMV 20%** | 21.02 | 1350.60 | **6744.56** | **11.36x** |
 | Qwen-3.6-27B-Reasoning | `27648 x 5120` | 135.0 MiB | OpenCL (gfx1101) | **Gather-GEMV 15%** | 18.30 | 1164.19 | **7749.28** | **13.05x** |
 
-> **Architectural Note on Infinity Cache (64 MB L3):**
-> Notice how on the `27648 x 5120` matrix (135.0 MiB), Dense INT8 exceeds the 64 MB Infinity Cache and streams directly from GDDR6 VRAM at **593.79 GB/s** (95.1% of the 624 GB/s physical bus limit). When **Gather-GEMV (20%)** is enabled, the active working set per projection drops to **27.0 MiB**, allowing high L3 Infinity Cache residency and reducing latency from **238.81 us to 21.02 us**.
-
 ---
 
-## 4. End-to-End Token Generation (`llama-bench` Format)
+## 4. End-to-End Token Generation (`llama-bench` Format on Reference GPU)
 
 | model | size | params | backend | ffn / decode mode | test | t/s | speedup |
 | :--- | ---: | ---: | :--- | :--- | :--- | ---: | ---: |

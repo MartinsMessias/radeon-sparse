@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-RDNA 3 / RDNA 4 AI Engine — Python SDK Quickstart
+RadeonSparse (radeon-sparse) — Python SDK Quickstart
 Demonstrates drop-in SparseLinearLayer usage with automatic INT8 quantization,
-Dense Wave64 GEMV, and Contextual Sparsity Gather-GEMV.
+Dense GEMV, and Contextual Sparsity Gather-GEMV on AMD Radeon GPUs.
 """
 
 import os
@@ -11,18 +11,18 @@ import numpy as np
 
 # Add repo root so `python` SDK package can be imported directly
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from python.rdna3_engine import RDNA3Engine
+from python import RadeonSparseEngine
 
 
 def main() -> None:
     print("=" * 72)
-    print("   RDNA 3 / RDNA 4 AI ENGINE — PYTHON SDK QUICKSTART")
+    print("   RADEONSPARSE — PYTHON SDK QUICKSTART")
     print("=" * 72)
 
-    with RDNA3Engine() as engine:
+    with RadeonSparseEngine() as engine:
         print(f"[GPU] Active Device : {engine.device_name}\n")
 
-        # 1. Create a standard FP32 weight matrix (e.g., Qwen-2.5 FFN projection)
+        # 1. Create a standard FP32 weight matrix (e.g., LLM FFN projection)
         M, K = 14336, 4096
         print(f"[Init] Quantizing FP32 layer [{M} x {K}] to INT8 in VRAM...")
         np.random.seed(42)
@@ -31,7 +31,7 @@ def main() -> None:
 
         layer = engine.create_layer_from_float(weights_fp32)
 
-        # 2. Dense Wave64 GEMV Forward Pass
+        # 2. Dense GEMV Forward Pass
         y_dense = layer.forward(x)
 
         # Verify against quantized CPU reference
@@ -49,7 +49,7 @@ def main() -> None:
 
         print(f"[Validation] Max Abs Error vs CPU Reference : {max_err:.6f} (PASS)")
         print("-" * 72)
-        print(f"[Dense Wave64 GEMV]      Latency: {stats['dense_latency_us']:6.2f} us | "
+        print(f"[Dense GEMV]             Latency: {stats['dense_latency_us']:6.2f} us | "
               f"VRAM BW: {stats['dense_bandwidth_gb_s']:6.2f} GB/s")
         print(f"[Sparse Gather 20% Act]  Latency: {stats['sparse_latency_us']:6.2f} us | "
               f"Effective BW: {stats['sparse_effective_bw_gb_s']:7.2f} GB/s "
