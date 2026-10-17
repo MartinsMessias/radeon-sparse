@@ -6,7 +6,9 @@ VRAM lifecycle management, and drop-in SparseLinearLayer for LLMs on AMD Radeon 
 """
 
 import os
+import shutil
 import ctypes
+import ctypes.util
 from typing import Optional, Tuple
 import numpy as np
 
@@ -25,20 +27,37 @@ def _find_library(custom_path: Optional[str] = None) -> str:
         return os.path.abspath(env_path)
 
     lib_name = "radeon_sparse.dll" if os.name == "nt" else "libradeon_sparse.so"
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    pkg_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.dirname(pkg_dir)
 
     candidates = [
+        os.path.join(pkg_dir, lib_name),
         os.path.join(repo_root, "bin", lib_name),
         os.path.join(repo_root, "build", lib_name),
         os.path.join(repo_root, lib_name),
         os.path.abspath(lib_name),
     ]
+    if os.name != "nt":
+        candidates.extend([
+            f"/usr/local/lib/{lib_name}",
+            f"/usr/lib/{lib_name}",
+        ])
+
     for path in candidates:
         if os.path.exists(path):
             return path
 
+    # Search in global system PATH or OS dynamic linker cache
+    which_lib = shutil.which(lib_name)
+    if which_lib:
+        return which_lib
+
+    found = ctypes.util.find_library("radeon_sparse")
+    if found:
+        return found
+
     raise FileNotFoundError(
-        f"Could not find {lib_name}. Run build_windows.bat (Windows) or ./build_linux.sh (Linux) first."
+        f"Could not find {lib_name}. Run install_windows.bat (Windows) or ./install_linux.sh (Linux) to configure globally."
     )
 
 

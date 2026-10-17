@@ -62,9 +62,32 @@ Large Language Models (LLMs) running at `batch_size = 1` (local autoregressive g
 
 ---
 
-## 🚀 Quickstart
+## 🚀 Quickstart & Global Installation
 
-### 1. Build (Windows & Linux)
+### 1. One-Click Global Installation (Recommended)
+
+To install **RadeonSparse** globally on your machine (registers `radeon_sparse.dll` / `.so` in the system, adds `radeon-sparse-bench` to your global `PATH`, sets `RADEON_SPARSE_LIB_PATH`, and installs the `radeon_sparse` Python package via `pip` so you can import it from any folder):
+
+**Windows:**
+```cmd
+install_windows.bat
+```
+
+**Linux:**
+```bash
+chmod +x install_linux.sh
+./install_linux.sh
+```
+
+Once installed globally, you can run from **any directory** on your computer:
+```bash
+radeon-sparse-bench
+python -c "from radeon_sparse import RadeonSparseEngine; print(RadeonSparseEngine().device_name)"
+```
+
+---
+
+### 2. Local Build Only (Without Global Install)
 
 **Windows (MSVC auto-detected via `vswhere`):**
 ```cmd
@@ -83,17 +106,18 @@ chmod +x build_linux.sh
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
+cmake --install build
 ```
 
 ---
 
-### 2. Use in Python (`RadeonSparseEngine` & `SparseLinearLayer`)
+### 3. Use in Python (`from radeon_sparse import RadeonSparseEngine`)
 
-The high-level Python SDK (`python/radeon_sparse.py`) handles `ctypes` bindings, automatic per-channel FP32 $\to$ INT8 quantization, and reusable VRAM buffers automatically:
+After running `install_windows.bat` / `./install_linux.sh` (or `pip install -e .`), import `radeon_sparse` from anywhere on your system:
 
 ```python
 import numpy as np
-from python import RadeonSparseEngine
+from radeon_sparse import RadeonSparseEngine
 
 with RadeonSparseEngine() as engine:
     print("Running on:", engine.device_name)

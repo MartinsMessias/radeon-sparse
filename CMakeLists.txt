@@ -30,3 +30,12 @@ target_link_libraries(use_in_c PRIVATE radeon_sparse)
 if(UNIX AND NOT APPLE)
     target_link_libraries(use_in_c PRIVATE m)
 endif()
+
+# 4. System-wide Global Installation Rules (cmake --install build)
+include(GNUInstallDirs)
+install(TARGETS radeon_sparse radeon-sparse-bench
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+)
+install(FILES include/radeon_sparse.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
