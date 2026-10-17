@@ -138,7 +138,7 @@ with RadeonSparseEngine() as engine:
 
 ---
 
-### 3. Use in C / C++ (`include/radeon_sparse.h`)
+### 4. Use in C / C++ (`include/radeon_sparse.h`)
 
 ```c
 #include "radeon_sparse.h"
@@ -164,17 +164,32 @@ rs_shutdown(ctx);
 
 ---
 
+### 5. Drop-In `ggml-vulkan.dll` Proxy (Ollama, LM Studio & `llama.cpp`)
+
+`radeon_sparse.dll` natively exports all 9 `ggml_backend_vk_*` ABI symbols (`ggml_backend_init`, `ggml_backend_vk_reg`, `ggml_backend_vk_init`, etc.). When placed as `ggml-vulkan.dll` next to `ggml-vulkan.dll.original.bak`, it initializes the in-process RadeonSparse OpenCL engine while transparently forwarding Vulkan backend graph calls to the original library with zero CPU fallback:
+
+```cmd
+:: One-click installation into llama.cpp, Ollama, or LM Studio:
+install_ggml_dropin.bat "C:\Path\To\llama-cpp\bin"
+install_ggml_dropin.bat "%LOCALAPPDATA%\Programs\Ollama\lib\ollama"
+install_ggml_dropin.bat "%LOCALAPPDATA%\Programs\LM Studio\resources"
+```
+
+See [docs/DROP_IN_REPLACEMENT.md](docs/DROP_IN_REPLACEMENT.md) and [docs/OLLAMA_AND_LLAMACPP.md](docs/OLLAMA_AND_LLAMACPP.md) for full details on `ggml-vulkan.dll` proxying, `GGML_OP_MUL_MAT` hooking, and 1-line PyTorch/HuggingFace model patching (`engine.patch_pytorch_model(model)`).
+
+---
+
 ## 📁 Repository Structure
 
 ```text
 radeon-sparse/
 ├── include/
-│   └── radeon_sparse.h              # Public C/C++ API header (rs_* functions)
+│   └── radeon_sparse.h              # Public C/C++ API header (rs_* + ggml_backend_vk_* proxy)
 ├── src/
-│   └── radeon_sparse.c              # OpenCL dynamic loader + JIT RadeonSparse kernels
+│   └── radeon_sparse.c              # OpenCL dynamic loader, JIT kernels & GGML Vulkan shim
 ├── python/
 │   ├── __init__.py
-│   └── radeon_sparse.py             # High-level RadeonSparseEngine & SparseLinearLayer SDK
+│   └── radeon_sparse.py             # RadeonSparseEngine, SparseLinearLayer & PyTorch patcher
 ├── benchmarks/
 │   ├── radeon_sparse_bench.c        # Official llama-bench style CLI (-o md | csv | json)
 │   └── benchmark_swiglu_sparsity.py # Mathematical SwiGLU energy & cosine similarity proof
@@ -183,10 +198,16 @@ radeon-sparse/
 │   └── use_in_python.py             # Python SDK quickstart example
 ├── docs/
 │   ├── ARCHITECTURE_AND_THEORY.md   # Deep-dive into Wavefront GEMV & Contextual Sparsity
-│   └── BENCHMARKS.md                # Full benchmark methodology & llama.cpp comparisons
-├── CMakeLists.txt                   # Cross-platform CMake build configuration
-├── build_windows.bat                # One-click Windows MSVC build script
-└── build_linux.sh                   # One-click Linux GCC build script
+│   ├── BENCHMARKS.md                # Full benchmark methodology & llama-bench tables
+│   ├── DROP_IN_REPLACEMENT.md       # Guide for ggml-vulkan.dll Drop-In Proxy architecture
+│   └── OLLAMA_AND_LLAMACPP.md       # Guide for Ollama, llama.cpp & HuggingFace PyTorch
+├── CMakeLists.txt                   # Cross-platform CMake build & install configuration
+├── setup.py                         # Python global pip package installer
+├── build_windows.bat                # Windows MSVC build script
+├── build_linux.sh                   # Linux GCC build script
+├── install_windows.bat              # 1-click Windows global system installer
+├── install_linux.sh                 # 1-click Linux global system installer
+└── install_ggml_dropin.bat          # 1-click ggml-vulkan.dll Drop-In Proxy installer
 ```
 
 ---
