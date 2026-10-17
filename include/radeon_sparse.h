@@ -273,6 +273,23 @@ RS_API double RS_CALL rs_benchmark_gather_gemv(
     double* out_effective_bw_gb_s
 );
 
+/* ============================================================================
+ * 5. GGML / llama.cpp Drop-In Proxy Exports (ggml-vulkan.dll compatibility)
+ * When radeon_sparse.dll is placed as ggml-vulkan.dll alongside
+ * ggml-vulkan.dll.original.bak, these exports transparently bridge GGML apps
+ * (llama.cpp, Ollama, LM Studio) while initializing RadeonSparse in-process.
+ * ============================================================================ */
+#include <stddef.h>
+RS_API void* RS_CALL ggml_backend_init(void);
+RS_API void* RS_CALL ggml_backend_vk_reg(void);
+RS_API void* RS_CALL ggml_backend_vk_init(size_t dev_num);
+RS_API int   RS_CALL ggml_backend_is_vk(void* backend);
+RS_API void* RS_CALL ggml_backend_vk_buffer_type(size_t dev_num);
+RS_API void* RS_CALL ggml_backend_vk_host_buffer_type(void);
+RS_API int   RS_CALL ggml_backend_vk_get_device_count(void);
+RS_API void  RS_CALL ggml_backend_vk_get_device_description(int device, char* description, size_t description_size);
+RS_API void  RS_CALL ggml_backend_vk_get_device_memory(int device, size_t* free_mem, size_t* total_mem);
+
 #ifdef __cplusplus
 }
 #endif

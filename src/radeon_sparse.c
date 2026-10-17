@@ -965,3 +965,127 @@ RS_API double RS_CALL rs_benchmark_gather_gemv(
 
     return avg_time_us;
 }
+
+/* ============================================================================
+ * 5. GGML / llama.cpp Drop-In Proxy Implementation (ggml-vulkan.dll shim)
+ * ============================================================================ */
+typedef void* (RS_CALL *pfn_ggml_backend_init)(void);
+typedef void* (RS_CALL *pfn_ggml_backend_vk_reg)(void);
+typedef void* (RS_CALL *pfn_ggml_backend_vk_init)(size_t);
+typedef int   (RS_CALL *pfn_ggml_backend_is_vk)(void*);
+typedef void* (RS_CALL *pfn_ggml_backend_vk_buffer_type)(size_t);
+typedef void* (RS_CALL *pfn_ggml_backend_vk_host_buffer_type)(void);
+typedef int   (RS_CALL *pfn_ggml_backend_vk_get_device_count)(void);
+typedef void  (RS_CALL *pfn_ggml_backend_vk_get_device_description)(int, char*, size_t);
+typedef void  (RS_CALL *pfn_ggml_backend_vk_get_device_memory)(int, size_t*, size_t*);
+
+static lib_handle_t s_hOrigVk = NULL;
+static rs_context_t s_proxy_rs_ctx = NULL;
+static pfn_ggml_backend_init                     orig_ggml_backend_init = NULL;
+static pfn_ggml_backend_vk_reg                   orig_ggml_backend_vk_reg = NULL;
+static pfn_ggml_backend_vk_init                  orig_ggml_backend_vk_init = NULL;
+static pfn_ggml_backend_is_vk                    orig_ggml_backend_is_vk = NULL;
+static pfn_ggml_backend_vk_buffer_type           orig_ggml_backend_vk_buffer_type = NULL;
+static pfn_ggml_backend_vk_host_buffer_type      orig_ggml_backend_vk_host_buffer_type = NULL;
+static pfn_ggml_backend_vk_get_device_count      orig_ggml_backend_vk_get_device_count = NULL;
+static pfn_ggml_backend_vk_get_device_description orig_ggml_backend_vk_get_device_description = NULL;
+static pfn_ggml_backend_vk_get_device_memory     orig_ggml_backend_vk_get_device_memory = NULL;
+
+static int ensure_orig_ggml_vulkan(void) {
+    if (s_hOrigVk) return 1;
+
+    #if defined(_WIN32) || defined(__CYGWIN__)
+    char dll_dir[MAX_PATH] = {0};
+    HMODULE hSelf = NULL;
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCSTR)&ensure_orig_ggml_vulkan, &hSelf)) {
+        GetModuleFileNameA(hSelf, dll_dir, MAX_PATH);
+        char* last_slash = strrchr(dll_dir, '\\');
+        if (last_slash) *(last_slash + 1) = '\0';
+    }
+    char cand1[MAX_PATH], cand2[MAX_PATH];
+    snprintf(cand1, MAX_PATH, "%sggml-vulkan.dll.original.bak", dll_dir);
+    snprintf(cand2, MAX_PATH, "%sggml-vulkan-original.dll", dll_dir);
+    s_hOrigVk = LOAD_LIB(cand1);
+    if (!s_hOrigVk) s_hOrigVk = LOAD_LIB(cand2);
+    if (!s_hOrigVk) s_hOrigVk = LOAD_LIB("ggml-vulkan.dll.original.bak");
+    if (!s_hOrigVk) s_hOrigVk = LOAD_LIB("ggml-vulkan-original.dll");
+    #else
+    s_hOrigVk = LOAD_LIB("./libggml-vulkan.so.original.bak");
+    if (!s_hOrigVk) s_hOrigVk = LOAD_LIB("libggml-vulkan.so.original.bak");
+    #endif
+
+    if (!s_hOrigVk) {
+        fprintf(stderr, "[RadeonSparse Proxy] Warning: Could not find ggml-vulkan.dll.original.bak next to ggml-vulkan.dll!\n");
+        return 0;
+    }
+
+    orig_ggml_backend_init                     = (pfn_ggml_backend_init)GET_SYM(s_hOrigVk, "ggml_backend_init");
+    orig_ggml_backend_vk_reg                   = (pfn_ggml_backend_vk_reg)GET_SYM(s_hOrigVk, "ggml_backend_vk_reg");
+    orig_ggml_backend_vk_init                  = (pfn_ggml_backend_vk_init)GET_SYM(s_hOrigVk, "ggml_backend_vk_init");
+    orig_ggml_backend_is_vk                    = (pfn_ggml_backend_is_vk)GET_SYM(s_hOrigVk, "ggml_backend_is_vk");
+    orig_ggml_backend_vk_buffer_type           = (pfn_ggml_backend_vk_buffer_type)GET_SYM(s_hOrigVk, "ggml_backend_vk_buffer_type");
+    orig_ggml_backend_vk_host_buffer_type      = (pfn_ggml_backend_vk_host_buffer_type)GET_SYM(s_hOrigVk, "ggml_backend_vk_host_buffer_type");
+    orig_ggml_backend_vk_get_device_count      = (pfn_ggml_backend_vk_get_device_count)GET_SYM(s_hOrigVk, "ggml_backend_vk_get_device_count");
+    orig_ggml_backend_vk_get_device_description = (pfn_ggml_backend_vk_get_device_description)GET_SYM(s_hOrigVk, "ggml_backend_vk_get_device_description");
+    orig_ggml_backend_vk_get_device_memory     = (pfn_ggml_backend_vk_get_device_memory)GET_SYM(s_hOrigVk, "ggml_backend_vk_get_device_memory");
+
+    if (!s_proxy_rs_ctx) {
+        if (rs_init(&s_proxy_rs_ctx) == RS_SUCCESS) {
+            fprintf(stderr, "[RadeonSparse Drop-In Proxy] Initialized OpenCL Engine on %s\n", rs_get_device_name(s_proxy_rs_ctx));
+        }
+    }
+    return 1;
+}
+
+RS_API void* RS_CALL ggml_backend_init(void) {
+    if (!ensure_orig_ggml_vulkan() || !orig_ggml_backend_init) return NULL;
+    return orig_ggml_backend_init();
+}
+
+RS_API void* RS_CALL ggml_backend_vk_reg(void) {
+    if (!ensure_orig_ggml_vulkan() || !orig_ggml_backend_vk_reg) return NULL;
+    return orig_ggml_backend_vk_reg();
+}
+
+RS_API void* RS_CALL ggml_backend_vk_init(size_t dev_num) {
+    if (!ensure_orig_ggml_vulkan() || !orig_ggml_backend_vk_init) return NULL;
+    return orig_ggml_backend_vk_init(dev_num);
+}
+
+RS_API int RS_CALL ggml_backend_is_vk(void* backend) {
+    if (!ensure_orig_ggml_vulkan() || !orig_ggml_backend_is_vk) return 0;
+    return orig_ggml_backend_is_vk(backend);
+}
+
+RS_API void* RS_CALL ggml_backend_vk_buffer_type(size_t dev_num) {
+    if (!ensure_orig_ggml_vulkan() || !orig_ggml_backend_vk_buffer_type) return NULL;
+    return orig_ggml_backend_vk_buffer_type(dev_num);
+}
+
+RS_API void* RS_CALL ggml_backend_vk_host_buffer_type(void) {
+    if (!ensure_orig_ggml_vulkan() || !orig_ggml_backend_vk_host_buffer_type) return NULL;
+    return orig_ggml_backend_vk_host_buffer_type();
+}
+
+RS_API int RS_CALL ggml_backend_vk_get_device_count(void) {
+    if (!ensure_orig_ggml_vulkan() || !orig_ggml_backend_vk_get_device_count) return 0;
+    return orig_ggml_backend_vk_get_device_count();
+}
+
+RS_API void RS_CALL ggml_backend_vk_get_device_description(int device, char* description, size_t description_size) {
+    if (!ensure_orig_ggml_vulkan() || !orig_ggml_backend_vk_get_device_description) return;
+    orig_ggml_backend_vk_get_device_description(device, description, description_size);
+    if (description && description_size > 20 && !strstr(description, "RadeonSparse")) {
+        size_t len = strlen(description);
+        if (len + 16 < description_size) {
+            strcat(description, " [RadeonSparse]");
+        }
+    }
+}
+
+RS_API void RS_CALL ggml_backend_vk_get_device_memory(int device, size_t* free_mem, size_t* total_mem) {
+    if (!ensure_orig_ggml_vulkan() || !orig_ggml_backend_vk_get_device_memory) return;
+    orig_ggml_backend_vk_get_device_memory(device, free_mem, total_mem);
+}
+
