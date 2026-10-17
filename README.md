@@ -1,9 +1,9 @@
-# ⚡ RDNA 3 / RDNA 4 AI Engine (`rdna3-ai-engine`)
+# ⚡ RadeonSparse (`radeon-sparse`)
 
-**High-Throughput Wave64 INT8 GEMV, Contextual Sparsity (`Gather-GEMV`), & Zero-Dependency C/Python SDK for AMD Radeon GPUs (RX 7000 & RX 9000 Series)**
+**High-Throughput Wave64 INT8 GEMV & Contextual Sparsity (`Gather-GEMV`) Engine for AMD Radeon GPUs (RDNA 3 & RDNA 4)**
 
-[![Architecture](https://img.shields.io/badge/AMD-RDNA_3_%2F_RDNA_4-ED1C24?logo=amd&logoColor=white)](#)
-[![OpenCL](https://img.shields.io/badge/Backend-OpenCL_2.0_JIT-blue)](#)
+[![Architecture](https://img.shields.io/badge/AMD_Radeon-RDNA_3_%2F_RDNA_4-ED1C24?logo=amd&logoColor=white)](#)
+[![OpenCL](https://img.shields.io/badge/Backend-OpenCL_2.0_Wave64-blue)](#)
 [![Platform](https://img.shields.io/badge/OS-Windows_%7C_Linux-success)](#)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
@@ -13,11 +13,11 @@
 
 Large Language Models (LLMs) running at `batch_size = 1` (local autoregressive generation) are strictly **Memory-Bandwidth Bound**. Standard dense inference engines read 100% of every Feed-Forward Network (FFN) matrix from GDDR6 VRAM for every single token, even though **75% to 85% of SwiGLU intermediate neurons produce near-zero activations**.
 
-`rdna3-ai-engine` solves this bottleneck at the hardware level for AMD consumer GPUs (**Radeon RX 7000 RDNA 3** and **RX 9000 RDNA 4**) with zero external dependencies (no ROCm 30 GB SDK required — runs directly on the native driver `OpenCL.dll` / `libOpenCL.so`):
+**RadeonSparse (`radeon-sparse`)** eliminates this memory bottleneck at the hardware level for AMD consumer GPUs (**Radeon RX 7000 RDNA 3** and **RX 9000 RDNA 4**) with zero external dependencies (no 30 GB ROCm SDK required — runs directly on the native driver `OpenCL.dll` / `libOpenCL.so`):
 
 1. **Wave64 Vectorized `vload8` + `convert_float8` Kernel (`gemv_rdna3_infinity_stream`):** Saturates the 256-bit GDDR6 bus at **593.79 GB/s** on large matrices (>95% of physical limit) and up to **1,254.85 GB/s** when hitting the **64 MB Infinity Cache (L3)**, with conflict-free Local Data Share (LDS) tree reduction and arbitrary-$K$ tail support.
 2. **Contextual Sparsity `Gather-GEMV` (`gemv_rdna3_contextual_gather`):** Dynamically fetches *only* the active FFN rows (`20%–25%`) from GDDR6 VRAM, multiplying effective memory bandwidth up to **3,497 – 6,744 GB/s** and accelerating 27B token generation from **17.49 t/s to 34.13 t/s** (**52.91 t/s** when combined with N-Gram Speculative Decoding).
-3. **Ergonomic C & Python SDK:** Automatic FP32-to-INT8 per-channel quantization (`rdna3_create_weights_from_fp32`), in-place VRAM buffer updates, and a drop-in Python `SparseLinearLayer` class.
+3. **Ergonomic C & Python SDK:** Automatic FP32-to-INT8 per-channel quantization (`rdna3_create_weights_from_fp32`), in-place VRAM buffer updates, and a drop-in Python `RadeonSparseEngine` + `SparseLinearLayer` SDK.
 
 ---
 
@@ -87,15 +87,15 @@ cmake --build build --config Release
 
 ---
 
-### 2. Use in Python (`RDNA3Engine` & `SparseLinearLayer`)
+### 2. Use in Python (`RadeonSparseEngine` & `SparseLinearLayer`)
 
-The high-level Python SDK (`python/rdna3_engine.py`) handles `ctypes` bindings, automatic per-channel FP32 $\to$ INT8 quantization, and reusable VRAM buffers automatically:
+The high-level Python SDK (`python/radeon_sparse.py`) handles `ctypes` bindings, automatic per-channel FP32 $\to$ INT8 quantization, and reusable VRAM buffers automatically:
 
 ```python
 import numpy as np
-from python.rdna3_engine import RDNA3Engine
+from python import RadeonSparseEngine
 
-with RDNA3Engine() as engine:
+with RadeonSparseEngine() as engine:
     print("Running on:", engine.device_name)
 
     # Create a GPU layer directly from a standard float32 matrix [M, K]
@@ -143,14 +143,15 @@ rdna3_shutdown(ctx);
 ## 📁 Repository Structure
 
 ```text
-rdna3-ai-engine/
+radeon-sparse/
 ├── include/
 │   └── rdna3_ai_engine.h            # Public C/C++ API header (Dense, Gather-GEMV, Auto-Quant)
 ├── src/
 │   └── rdna3_ai_engine.c            # OpenCL dynamic loader + JIT Wave64 RDNA 3/4 kernels
 ├── python/
 │   ├── __init__.py
-│   └── rdna3_engine.py              # High-level Python SDK (RDNA3Engine & SparseLinearLayer)
+│   ├── radeon_sparse.py             # High-level RadeonSparseEngine & SparseLinearLayer SDK
+│   └── rdna3_engine.py              # Core ctypes implementation
 ├── benchmarks/
 │   ├── rdna3_bench.c                # Official llama-bench style CLI (-o md | csv | json)
 │   └── benchmark_swiglu_sparsity.py # Mathematical SwiGLU energy & cosine similarity proof
@@ -158,7 +159,7 @@ rdna3-ai-engine/
 │   ├── use_in_c.c                   # C quickstart & validation example
 │   └── use_in_python.py             # Python SDK quickstart example
 ├── docs/
-│   ├── ARCHITECTURE_AND_THEORY.md   # Deep-dive into RDNA 3 Wave64 & Contextual Sparsity
+│   ├── ARCHITECTURE_AND_THEORY.md   # Deep-dive into RDNA 3/4 Wave64 & Contextual Sparsity
 │   └── BENCHMARKS.md                # Full benchmark methodology & llama.cpp comparisons
 ├── CMakeLists.txt                   # Cross-platform CMake build configuration
 ├── build_windows.bat                # One-click Windows MSVC build script
