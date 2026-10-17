@@ -279,7 +279,7 @@ int main(int argc, char** argv) {
             printf("| %s | %.2f GiB | %s | OpenCL (%s) | **Sparse 20%% + N-Gram Spec** | tg128 | **%.2f ± 0.45** | **%.2fx** |\n",
                    arch->model_name, arch->total_vram_gib, arch->params_str, gpu_name, spec_ts, spec_ts / dense_ts);
         }
-        printf("\nbuild: RadeonSparse v2.0 (OpenCL Vectorized Wavefront `vload8` + `convert_float8` + Gather-GEMV)\n");
+        printf("\nbuild: RadeonSparse v2.0 (OpenCL Vectorized Wavefront 128-bit `vload16` + `convert_float16` + Wave32 + Gather-GEMV)\n");
     } else if (fmt == FMT_JSON) {
         printf("\n  ]\n}\n");
     }

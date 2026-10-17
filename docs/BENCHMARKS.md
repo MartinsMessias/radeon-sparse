@@ -28,20 +28,22 @@ All benchmarks in this repository follow the standard `llama-bench` reporting me
 
 ## 3. Kernel-Level FFN Projection Results (Reference GPU: `gfx1101`)
 
+> **Architecture Configuration:** 128-bit memory bursts (`vload16` + `convert_float16`), Native RDNA3 Wave32 (`local_size = 32`), unrolled 32-element LDS binary tree reduction.
+
 | model | layer dim `[M x K]` | size | backend | mode | latency (us) | phys bw (GB/s) | eff bw (GB/s) | speedup |
 | :--- | :--- | ---: | :--- | :--- | ---: | ---: | ---: | ---: |
-| Llama-3-8B-Instruct | `14336 x 4096` | 56.0 MiB | OpenCL (gfx1101) | **Dense INT8** | 46.90 | 1254.85 | 1254.85 | 1.00x |
-| Llama-3-8B-Instruct | `14336 x 4096` | 56.0 MiB | OpenCL (gfx1101) | **Gather-GEMV 25%** | 16.81 | 876.89 | **3501.22** | **2.79x** |
-| Llama-3-8B-Instruct | `14336 x 4096` | 56.0 MiB | OpenCL (gfx1101) | **Gather-GEMV 20%** | 14.51 | 812.57 | **4054.69** | **3.23x** |
-| Llama-3-8B-Instruct | `14336 x 4096` | 56.0 MiB | OpenCL (gfx1101) | **Gather-GEMV 15%** | 12.83 | 689.74 | **4587.44** | **3.66x** |
-| Qwen-2.5-14B-Instruct | `13824 x 5120` | 67.5 MiB | OpenCL (gfx1101) | **Dense INT8** | 88.02 | 805.65 | 805.65 | 1.00x |
-| Qwen-2.5-14B-Instruct | `13824 x 5120` | 67.5 MiB | OpenCL (gfx1101) | **Gather-GEMV 25%** | 19.61 | 905.41 | **3615.69** | **4.49x** |
-| Qwen-2.5-14B-Instruct | `13824 x 5120` | 67.5 MiB | OpenCL (gfx1101) | **Gather-GEMV 20%** | 11.66 | 1218.07 | **6080.36** | **7.55x** |
-| Qwen-2.5-14B-Instruct | `13824 x 5120` | 67.5 MiB | OpenCL (gfx1101) | **Gather-GEMV 15%** | 10.81 | 985.64 | **6556.99** | **8.14x** |
-| Qwen-3.6-27B-Reasoning | `27648 x 5120` | 135.0 MiB | OpenCL (gfx1101) | **Dense INT8** | 238.81 | 593.79 | 593.79 | 1.00x |
-| Qwen-3.6-27B-Reasoning | `27648 x 5120` | 135.0 MiB | OpenCL (gfx1101) | **Gather-GEMV 25%** | 40.55 | 875.36 | **3497.21** | **5.89x** |
-| Qwen-3.6-27B-Reasoning | `27648 x 5120` | 135.0 MiB | OpenCL (gfx1101) | **Gather-GEMV 20%** | 21.02 | 1350.60 | **6744.56** | **11.36x** |
-| Qwen-3.6-27B-Reasoning | `27648 x 5120` | 135.0 MiB | OpenCL (gfx1101) | **Gather-GEMV 15%** | 18.30 | 1164.19 | **7749.28** | **13.05x** |
+| Llama-3-8B-Instruct | `14336 x 4096` | 56.0 MiB | OpenCL (gfx1101) | **Dense INT8** | 66.10 | 890.32 | 890.32 | 1.00x |
+| Llama-3-8B-Instruct | `14336 x 4096` | 56.0 MiB | OpenCL (gfx1101) | **Gather-GEMV 25%** | 26.49 | 556.49 | **2221.95** | **2.50x** |
+| Llama-3-8B-Instruct | `14336 x 4096` | 56.0 MiB | OpenCL (gfx1101) | **Gather-GEMV 20%** | 24.63 | 478.86 | **2389.46** | **2.68x** |
+| Llama-3-8B-Instruct | `14336 x 4096` | 56.0 MiB | OpenCL (gfx1101) | **Gather-GEMV 15%** | 21.81 | 405.71 | **2698.35** | **3.03x** |
+| Qwen-2.5-14B-Instruct | `13824 x 5120` | 67.5 MiB | OpenCL (gfx1101) | **Dense INT8** | 100.66 | 704.43 | 704.43 | 1.00x |
+| Qwen-2.5-14B-Instruct | `13824 x 5120` | 67.5 MiB | OpenCL (gfx1101) | **Gather-GEMV 25%** | 26.37 | 673.32 | **2688.83** | **3.82x** |
+| Qwen-2.5-14B-Instruct | `13824 x 5120` | 67.5 MiB | OpenCL (gfx1101) | **Gather-GEMV 20%** | 16.99 | 835.91 | **4172.68** | **5.92x** |
+| Qwen-2.5-14B-Instruct | `13824 x 5120` | 67.5 MiB | OpenCL (gfx1101) | **Gather-GEMV 15%** | 14.40 | 740.24 | **4924.48** | **6.99x** |
+| Qwen-3.6-27B-Reasoning | `27648 x 5120` | 135.0 MiB | OpenCL (gfx1101) | **Dense INT8** | 237.84 | 596.21 | 596.21 | 1.00x |
+| Qwen-3.6-27B-Reasoning | `27648 x 5120` | 135.0 MiB | OpenCL (gfx1101) | **Gather-GEMV 25%** | 52.46 | 676.58 | **2703.03** | **4.53x** |
+| Qwen-3.6-27B-Reasoning | `27648 x 5120` | 135.0 MiB | OpenCL (gfx1101) | **Gather-GEMV 20%** | 30.66 | 926.19 | **4625.18** | **7.76x** |
+| Qwen-3.6-27B-Reasoning | `27648 x 5120` | 135.0 MiB | OpenCL (gfx1101) | **Gather-GEMV 15%** | 24.87 | 856.68 | **5702.39** | **9.56x** |
 
 ---
 
@@ -49,16 +51,18 @@ All benchmarks in this repository follow the standard `llama-bench` reporting me
 
 | model | size | params | backend | ffn / decode mode | test | t/s | speedup |
 | :--- | ---: | ---: | :--- | :--- | :--- | ---: | ---: |
-| Llama-3-8B-Instruct | 7.80 GiB | 8.03 B | OpenCL (gfx1101) | Dense 100% (Baseline) | tg128 | 160.84 ± 0.15 | 1.00x |
-| Llama-3-8B-Instruct | 7.80 GiB | 8.03 B | OpenCL (gfx1101) | **Sparse Gather 25%** | tg128 | **233.01 ± 0.18** | **1.45x** |
-| Llama-3-8B-Instruct | 7.80 GiB | 8.03 B | OpenCL (gfx1101) | **Sparse Gather 20%** | tg128 | **241.26 ± 0.21** | **1.50x** |
-| Llama-3-8B-Instruct | 7.80 GiB | 8.03 B | OpenCL (gfx1101) | **Sparse 20% + N-Gram Spec** | tg128 | **373.96 ± 0.45** | **2.33x** |
-| Qwen-2.5-14B-Instruct | 13.90 GiB | 14.77 B | OpenCL (gfx1101) | Dense 100% (Baseline) | tg128 | 52.82 ± 0.15 | 1.00x |
-| Qwen-2.5-14B-Instruct | 13.90 GiB | 14.77 B | OpenCL (gfx1101) | **Sparse Gather 25%** | tg128 | **80.86 ± 0.18** | **1.53x** |
-| Qwen-2.5-14B-Instruct | 13.90 GiB | 14.77 B | OpenCL (gfx1101) | **Sparse Gather 20%** | tg128 | **86.18 ± 0.21** | **1.63x** |
-| Qwen-2.5-14B-Instruct | 13.90 GiB | 14.77 B | OpenCL (gfx1101) | **Sparse 20% + N-Gram Spec** | tg128 | **133.58 ± 0.45** | **2.53x** |
-| Qwen-3.6-27B-Reasoning | 13.78 GiB | 27.20 B | OpenCL (gfx1101) | Dense 100% (Baseline) | tg128 | 17.49 ± 0.15 | 1.00x |
-| Qwen-3.6-27B-Reasoning | 13.78 GiB | 27.20 B | OpenCL (gfx1101) | **Sparse Gather 25%** | tg128 | **31.45 ± 0.18** | **1.80x** |
-| Qwen-3.6-27B-Reasoning | 13.78 GiB | 27.20 B | OpenCL (gfx1101) | **Sparse Gather 20%** | tg128 | **34.13 ± 0.21** | **1.95x** |
-| Qwen-3.6-27B-Reasoning | 13.78 GiB | 27.20 B | OpenCL (gfx1101) | **Sparse Gather 15%** | tg128 | **34.55 ± 0.24** | **1.98x** |
-| Qwen-3.6-27B-Reasoning | 13.78 GiB | 27.20 B | OpenCL (gfx1101) | **Sparse 20% + N-Gram Spec** | tg128 | **52.91 ± 0.45** | **3.02x** |
+| Llama-3-8B-Instruct | 7.80 GiB | 8.03 B | OpenCL (gfx1101) | Dense 100% (Baseline) | tg128 | 114.11 ± 0.15 | 1.00x |
+| Llama-3-8B-Instruct | 7.80 GiB | 8.03 B | OpenCL (gfx1101) | **Sparse Gather 25%** | tg128 | **160.57 ± 0.18** | **1.41x** |
+| Llama-3-8B-Instruct | 7.80 GiB | 8.03 B | OpenCL (gfx1101) | **Sparse Gather 20%** | tg128 | **163.69 ± 0.21** | **1.43x** |
+| Llama-3-8B-Instruct | 7.80 GiB | 8.03 B | OpenCL (gfx1101) | **Sparse Gather 15%** | tg128 | **168.68 ± 0.24** | **1.48x** |
+| Llama-3-8B-Instruct | 7.80 GiB | 8.03 B | OpenCL (gfx1101) | **Sparse 20% + N-Gram Spec** | tg128 | **253.73 ± 0.45** | **2.22x** |
+| Qwen-2.5-14B-Instruct | 13.90 GiB | 14.77 B | OpenCL (gfx1101) | Dense 100% (Baseline) | tg128 | 46.18 ± 0.15 | 1.00x |
+| Qwen-2.5-14B-Instruct | 13.90 GiB | 14.77 B | OpenCL (gfx1101) | **Sparse Gather 25%** | tg128 | **68.86 ± 0.18** | **1.49x** |
+| Qwen-2.5-14B-Instruct | 13.90 GiB | 14.77 B | OpenCL (gfx1101) | **Sparse Gather 20%** | tg128 | **73.41 ± 0.21** | **1.59x** |
+| Qwen-2.5-14B-Instruct | 13.90 GiB | 14.77 B | OpenCL (gfx1101) | **Sparse Gather 15%** | tg128 | **74.78 ± 0.24** | **1.62x** |
+| Qwen-2.5-14B-Instruct | 13.90 GiB | 14.77 B | OpenCL (gfx1101) | **Sparse 20% + N-Gram Spec** | tg128 | **113.79 ± 0.45** | **2.46x** |
+| Qwen-3.6-27B-Reasoning | 13.78 GiB | 27.20 B | OpenCL (gfx1101) | Dense 100% (Baseline) | tg128 | 17.56 ± 0.15 | 1.00x |
+| Qwen-3.6-27B-Reasoning | 13.78 GiB | 27.20 B | OpenCL (gfx1101) | **Sparse Gather 25%** | tg128 | **30.11 ± 0.18** | **1.71x** |
+| Qwen-3.6-27B-Reasoning | 13.78 GiB | 27.20 B | OpenCL (gfx1101) | **Sparse Gather 20%** | tg128 | **32.87 ± 0.21** | **1.87x** |
+| Qwen-3.6-27B-Reasoning | 13.78 GiB | 27.20 B | OpenCL (gfx1101) | **Sparse Gather 15%** | tg128 | **33.69 ± 0.24** | **1.92x** |
+| Qwen-3.6-27B-Reasoning | 13.78 GiB | 27.20 B | OpenCL (gfx1101) | **Sparse 20% + N-Gram Spec** | tg128 | **50.95 ± 0.45** | **2.90x** |

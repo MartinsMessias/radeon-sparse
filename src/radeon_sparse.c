@@ -150,12 +150,13 @@ static int load_opencl(void) {
 
 /* ============================================================================
  * RadeonSparse OpenCL Compute Shaders
- * - Uses vectorized 64-bit `vload8` + hardware `convert_float8`
+ * - Uses vectorized 128-bit burst `vload16` + hardware `convert_float16`
+ * - Optimized for native RDNA3 Wave32 execution (32 threads / workgroup)
  * - Supports arbitrary K dimensions via scalar tail loop
  * - Uses conflict-free LDS parallel tree reduction
  * ============================================================================ */
 static const char* RADEON_SPARSE_KERNEL_SOURCE =
-"/* 1. Dense Vectorized Wavefront GEMV */\n"
+"/* 1. Dense Vectorized Wavefront GEMV (128-bit vload16 + Wave32) */\n"
 "__kernel void gemv_radeon_dense(\n"
 "    __global const char* restrict W,\n"
 "    __global const float* restrict X,\n"
@@ -169,40 +170,45 @@ static const char* RADEON_SPARSE_KERNEL_SOURCE =
 "    if (row >= M) return;\n"
 "\n"
 "    __global const char* rW = W + (size_t)row * K;\n"
-"    float8 acc = (float8)(0.0f);\n"
+"    float16 acc = (float16)(0.0f);\n"
 "\n"
-"    int num_v8 = K / 8;\n"
-"    for (int v = tid; v < num_v8; v += 64) {\n"
-"        char8 raw_w = vload8(v, rW);\n"
-"        float8 w = convert_float8(raw_w);\n"
-"        float8 x = vload8(v, X);\n"
+"    int num_v16 = K / 16;\n"
+"    for (int v = tid; v < num_v16; v += 32) {\n"
+"        char16 raw_w = vload16(v, rW);\n"
+"        float16 w = convert_float16(raw_w);\n"
+"        float16 x = vload16(v, X);\n"
 "        acc = mad(w, x, acc);\n"
 "    }\n"
 "\n"
-"    float thread_sum = acc.s0 + acc.s1 + acc.s2 + acc.s3 + acc.s4 + acc.s5 + acc.s6 + acc.s7;\n"
+"    float thread_sum = (acc.s0 + acc.s1 + acc.s2 + acc.s3) +\n"
+"                       (acc.s4 + acc.s5 + acc.s6 + acc.s7) +\n"
+"                       (acc.s8 + acc.s9 + acc.sa + acc.sb) +\n"
+"                       (acc.sc + acc.sd + acc.se + acc.sf);\n"
 "\n"
-"    int tail_start = num_v8 * 8;\n"
-"    for (int k = tail_start + tid; k < K; k += 64) {\n"
+"    int tail_start = num_v16 * 16;\n"
+"    for (int k = tail_start + tid; k < K; k += 32) {\n"
 "        thread_sum += ((float)rW[k]) * X[k];\n"
 "    }\n"
 "\n"
-"    __local float lds[64];\n"
+"    __local float lds[32];\n"
 "    lds[tid] = thread_sum;\n"
 "    barrier(CLK_LOCAL_MEM_FENCE);\n"
 "\n"
-"    for (int offset = 32; offset > 0; offset >>= 1) {\n"
-"        if (tid < offset) {\n"
-"            lds[tid] += lds[tid + offset];\n"
-"        }\n"
-"        barrier(CLK_LOCAL_MEM_FENCE);\n"
-"    }\n"
+"    if (tid < 16) lds[tid] += lds[tid + 16];\n"
+"    barrier(CLK_LOCAL_MEM_FENCE);\n"
+"    if (tid < 8)  lds[tid] += lds[tid + 8];\n"
+"    barrier(CLK_LOCAL_MEM_FENCE);\n"
+"    if (tid < 4)  lds[tid] += lds[tid + 4];\n"
+"    barrier(CLK_LOCAL_MEM_FENCE);\n"
+"    if (tid < 2)  lds[tid] += lds[tid + 2];\n"
+"    barrier(CLK_LOCAL_MEM_FENCE);\n"
 "\n"
 "    if (tid == 0) {\n"
-"        Y[row] = lds[0] * scales[row];\n"
+"        Y[row] = (lds[0] + lds[1]) * scales[row];\n"
 "    }\n"
 "}\n"
 "\n"
-"/* 2. Contextual Sparsity Gather-GEMV (skips inactive rows in VRAM) */\n"
+"/* 2. Contextual Sparsity Gather-GEMV (128-bit vload16 + Wave32) */\n"
 "__kernel void gemv_radeon_sparse_gather(\n"
 "    __global const char* restrict W,\n"
 "    __global const float* restrict X,\n"
@@ -221,36 +227,41 @@ static const char* RADEON_SPARSE_KERNEL_SOURCE =
 "    if (row < 0 || row >= M) return;\n"
 "\n"
 "    __global const char* rW = W + (size_t)row * K;\n"
-"    float8 acc = (float8)(0.0f);\n"
+"    float16 acc = (float16)(0.0f);\n"
 "\n"
-"    int num_v8 = K / 8;\n"
-"    for (int v = tid; v < num_v8; v += 64) {\n"
-"        char8 raw_w = vload8(v, rW);\n"
-"        float8 w = convert_float8(raw_w);\n"
-"        float8 x = vload8(v, X);\n"
+"    int num_v16 = K / 16;\n"
+"    for (int v = tid; v < num_v16; v += 32) {\n"
+"        char16 raw_w = vload16(v, rW);\n"
+"        float16 w = convert_float16(raw_w);\n"
+"        float16 x = vload16(v, X);\n"
 "        acc = mad(w, x, acc);\n"
 "    }\n"
 "\n"
-"    float thread_sum = acc.s0 + acc.s1 + acc.s2 + acc.s3 + acc.s4 + acc.s5 + acc.s6 + acc.s7;\n"
+"    float thread_sum = (acc.s0 + acc.s1 + acc.s2 + acc.s3) +\n"
+"                       (acc.s4 + acc.s5 + acc.s6 + acc.s7) +\n"
+"                       (acc.s8 + acc.s9 + acc.sa + acc.sb) +\n"
+"                       (acc.sc + acc.sd + acc.se + acc.sf);\n"
 "\n"
-"    int tail_start = num_v8 * 8;\n"
-"    for (int k = tail_start + tid; k < K; k += 64) {\n"
+"    int tail_start = num_v16 * 16;\n"
+"    for (int k = tail_start + tid; k < K; k += 32) {\n"
 "        thread_sum += ((float)rW[k]) * X[k];\n"
 "    }\n"
 "\n"
-"    __local float lds[64];\n"
+"    __local float lds[32];\n"
 "    lds[tid] = thread_sum;\n"
 "    barrier(CLK_LOCAL_MEM_FENCE);\n"
 "\n"
-"    for (int offset = 32; offset > 0; offset >>= 1) {\n"
-"        if (tid < offset) {\n"
-"            lds[tid] += lds[tid + offset];\n"
-"        }\n"
-"        barrier(CLK_LOCAL_MEM_FENCE);\n"
-"    }\n"
+"    if (tid < 16) lds[tid] += lds[tid + 16];\n"
+"    barrier(CLK_LOCAL_MEM_FENCE);\n"
+"    if (tid < 8)  lds[tid] += lds[tid + 8];\n"
+"    barrier(CLK_LOCAL_MEM_FENCE);\n"
+"    if (tid < 4)  lds[tid] += lds[tid + 4];\n"
+"    barrier(CLK_LOCAL_MEM_FENCE);\n"
+"    if (tid < 2)  lds[tid] += lds[tid + 2];\n"
+"    barrier(CLK_LOCAL_MEM_FENCE);\n"
 "\n"
 "    if (tid == 0) {\n"
-"        Y[row] = lds[0] * scales[row];\n"
+"        Y[row] = (lds[0] + lds[1]) * scales[row];\n"
 "    }\n"
 "}\n"
 "\n"
@@ -730,7 +741,7 @@ RS_API int RS_CALL rs_gemv_int8(
     clSetKernelArg(state->kernel_dense, 4, sizeof(int), &M);
     clSetKernelArg(state->kernel_dense, 5, sizeof(int), &K);
 
-    cl_size_t local_size = 64;
+    cl_size_t local_size = 32;
     cl_size_t global_size = (cl_size_t)M * local_size;
 
     cl_int err = clEnqueueNDRangeKernel(state->queue, state->kernel_dense, 1, NULL, &global_size, &local_size, 0, NULL, NULL);
@@ -775,7 +786,7 @@ RS_API int RS_CALL rs_gather_gemv_int8(
     clSetKernelArg(state->kernel_gather, 6, sizeof(int), &M);
     clSetKernelArg(state->kernel_gather, 7, sizeof(int), &K);
 
-    cl_size_t local_size = 64;
+    cl_size_t local_size = 32;
     cl_size_t global_size = (cl_size_t)num_active * local_size;
 
     cl_int err = clEnqueueNDRangeKernel(state->queue, state->kernel_gather, 1, NULL, &global_size, &local_size, 0, NULL, NULL);
