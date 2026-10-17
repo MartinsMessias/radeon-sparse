@@ -33,10 +33,7 @@ echo [3/4] Adding %INSTALL_DIR%\bin to User PATH ...
 powershell -NoProfile -Command "$p = [Environment]::GetEnvironmentVariable('Path', 'User'); if ($p -notlike '*%INSTALL_DIR%\bin*') { [Environment]::SetEnvironmentVariable('Path', $p + ';%INSTALL_DIR%\bin', 'User'); Write-Host '      Added to User PATH.' } else { Write-Host '      Already in User PATH.' }"
 
 echo [4/4] Installing global Python package (pip install -e .) ...
-python -m pip install -e . --no-build-isolation --quiet
-if %ERRORLEVEL% NEQ 0 (
-    python -m pip install -e . --quiet
-)
+python -m pip install -e . --no-deps --quiet
 
 popd
 echo.
