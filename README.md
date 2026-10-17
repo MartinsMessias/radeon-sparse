@@ -1,9 +1,9 @@
 # ⚡ RadeonSparse (`radeon-sparse`)
 
-**High-Throughput Wave64 INT8 GEMV & Contextual Sparsity (`Gather-GEMV`) Engine for AMD Radeon GPUs (RDNA 3 & RDNA 4)**
+**High-Throughput Quantized GEMV & Contextual Sparsity (`Gather-GEMV`) Engine for AMD Radeon GPUs**
 
-[![Architecture](https://img.shields.io/badge/AMD_Radeon-RDNA_3_%2F_RDNA_4-ED1C24?logo=amd&logoColor=white)](#)
-[![OpenCL](https://img.shields.io/badge/Backend-OpenCL_2.0_Wave64-blue)](#)
+[![Architecture](https://img.shields.io/badge/AMD_Radeon-RDNA_2_%7C_RDNA_3_%7C_RDNA_4-ED1C24?logo=amd&logoColor=white)](#)
+[![OpenCL](https://img.shields.io/badge/Backend-OpenCL_2.0_JIT-blue)](#)
 [![Platform](https://img.shields.io/badge/OS-Windows_%7C_Linux-success)](#)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
@@ -11,19 +11,19 @@
 
 ## 🎯 Overview
 
-Large Language Models (LLMs) running at `batch_size = 1` (local autoregressive generation) are strictly **Memory-Bandwidth Bound**. Standard dense inference engines read 100% of every Feed-Forward Network (FFN) matrix from GDDR6 VRAM for every single token, even though **75% to 85% of SwiGLU intermediate neurons produce near-zero activations**.
+Large Language Models (LLMs) running at `batch_size = 1` (local autoregressive generation) are strictly **Memory-Bandwidth Bound**. Standard dense inference engines read 100% of every Feed-Forward Network (FFN) matrix from VRAM for every single token, even though **75% to 85% of SwiGLU intermediate neurons produce near-zero activations**.
 
-**RadeonSparse (`radeon-sparse`)** eliminates this memory bottleneck at the hardware level for AMD consumer GPUs (**Radeon RX 7000 RDNA 3** and **RX 9000 RDNA 4**) with zero external dependencies (no 30 GB ROCm SDK required — runs directly on the native driver `OpenCL.dll` / `libOpenCL.so`):
+**RadeonSparse (`radeon-sparse`)** eliminates this memory bottleneck at the hardware level across **AMD Radeon GPUs** (RX 6000, RX 7000, RX 9000 series, and Radeon APUs) with zero external dependencies (no multi-gigabyte ROCm SDK required — runs directly via the native driver `OpenCL.dll` / `libOpenCL.so`):
 
-1. **Wave64 Vectorized `vload8` + `convert_float8` Kernel (`gemv_rdna3_infinity_stream`):** Saturates the 256-bit GDDR6 bus at **593.79 GB/s** on large matrices (>95% of physical limit) and up to **1,254.85 GB/s** when hitting the **64 MB Infinity Cache (L3)**, with conflict-free Local Data Share (LDS) tree reduction and arbitrary-$K$ tail support.
-2. **Contextual Sparsity `Gather-GEMV` (`gemv_rdna3_contextual_gather`):** Dynamically fetches *only* the active FFN rows (`20%–25%`) from GDDR6 VRAM, multiplying effective memory bandwidth up to **3,497 – 6,744 GB/s** and accelerating 27B token generation from **17.49 t/s to 34.13 t/s** (**52.91 t/s** when combined with N-Gram Speculative Decoding).
+1. **Vectorized Wavefront INT8 GEMV (`gemv_rdna3_infinity_stream`):** Uses coalesced 64-bit vector loads (`vload8`), hardware `convert_float8` instructions, conflict-free Local Data Share (LDS) tree reduction, and arbitrary-$K$ tail handling to saturate the memory bus of any target Radeon GPU.
+2. **Contextual Sparsity `Gather-GEMV` (`gemv_rdna3_contextual_gather`):** Dynamically fetches *only* the active FFN rows (`15%–25%`) from VRAM. By skipping 75%–85% of inactive neurons, it drastically reduces external VRAM traffic and shrinks the active working set so it can reside inside the GPU's on-die **AMD Infinity Cache (L3)** (whether 32 MB, 64 MB, or 96 MB).
 3. **Ergonomic C & Python SDK:** Automatic FP32-to-INT8 per-channel quantization (`rdna3_create_weights_from_fp32`), in-place VRAM buffer updates, and a drop-in Python `RadeonSparseEngine` + `SparseLinearLayer` SDK.
 
 ---
 
-## 📊 Official Benchmarks (`rdna3-bench` / `llama-bench` Format)
+## 📊 Reference Benchmarks (`rdna3-bench` / `llama-bench` Format)
 
-Measured on **AMD Radeon RX 7800 XT 16 GB (`gfx1101`)** using `bin/rdna3-bench` (`CL_QUEUE_PROFILING_ENABLE` hardware timers, 150 iterations):
+> **Reference Test System:** The benchmarks below were captured on an **AMD Radeon RX 7800 XT (16 GB GDDR6, `gfx1101`)** using `bin/rdna3-bench` (`CL_QUEUE_PROFILING_ENABLE` hardware timers, 150 iterations). Run `rdna3-bench` on your own Radeon GPU to generate tables for your hardware.
 
 ### 1. Kernel-Level FFN Projection Benchmark (`W_down` / `W_up` Matrix)
 
