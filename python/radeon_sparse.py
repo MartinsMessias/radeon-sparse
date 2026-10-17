@@ -216,6 +216,53 @@ class RadeonSparseEngine:
         """Creates a GPU-accelerated SparseLinearLayer from pre-quantized INT8 weights [M, K] and FP32 scales [M]."""
         return SparseLinearLayer.from_int8(self, weights_int8, scales_fp32)
 
+    def patch_pytorch_model(self, model, active_ratio: float = 0.20, target_Keywords: Tuple[str, ...] = ("down_proj", "up_proj", "w2", "w3")) -> int:
+        """
+        Automatically replaces matching torch.nn.Linear layers (e.g. FFN up_proj / down_proj)
+        in a PyTorch / HuggingFace Transformers model with RadeonSparse GPU Gather-GEMV layers.
+        Returns the number of patched layers.
+        """
+        import torch
+        import torch.nn as nn
+
+        class _PyTorchRadeonSparseLinear(nn.Module):
+            def __init__(self, rs_engine: "RadeonSparseEngine", orig_linear: nn.Linear, ratio: float):
+                super().__init__()
+                self.in_features = orig_linear.in_features
+                self.out_features = orig_linear.out_features
+                self.active_ratio = ratio
+                w_np = orig_linear.weight.detach().to(torch.float32).cpu().numpy()
+                self.rs_layer = rs_engine.create_layer_from_float(w_np)
+                self.bias = orig_linear.bias.detach().to(torch.float32).cpu().numpy() if orig_linear.bias is not None else None
+
+            def forward(self, x: "torch.Tensor") -> "torch.Tensor":
+                orig_shape = x.shape
+                orig_device = x.device
+                orig_dtype = x.dtype
+                x_flat = x.detach().to(torch.float32).cpu().numpy().reshape(-1, self.in_features)
+                out_rows = []
+                for token_vec in x_flat:
+                    if 0.0 < self.active_ratio < 1.0:
+                        k = max(1, int(self.out_features * self.active_ratio))
+                        idx = np.linspace(0, self.out_features - 1, k, dtype=np.int32)
+                        y = self.rs_layer.forward_sparse(token_vec, idx)
+                    else:
+                        y = self.rs_layer.forward(token_vec)
+                    if self.bias is not None:
+                        y = y + self.bias
+                    out_rows.append(y)
+                out_np = np.stack(out_rows, axis=0).reshape(*orig_shape[:-1], self.out_features)
+                return torch.from_numpy(out_np).to(device=orig_device, dtype=orig_dtype)
+
+        patched_count = 0
+        for name, module in list(model.named_modules()):
+            for child_name, child in list(module.named_children()):
+                full_name = f"{name}.{child_name}" if name else child_name
+                if isinstance(child, nn.Linear) and any(kw in full_name for kw in target_Keywords):
+                    setattr(module, child_name, _PyTorchRadeonSparseLinear(self, child, active_ratio))
+                    patched_count += 1
+        return patched_count
+
     def close(self) -> None:
         if getattr(self, "_ctx", None):
             self._lib.rs_shutdown(self._ctx)
