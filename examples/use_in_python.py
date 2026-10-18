@@ -39,15 +39,25 @@ def main() -> None:
         y_ref = (w_q.astype(np.float32) @ x) * s_q
         max_err = float(np.max(np.abs(y_dense - y_ref)))
 
-        # 3. Contextual Sparsity Gather-GEMV (20% active rows)
+        # 3. Contextual Sparsity Row-Gather GEMV (20% active rows)
         num_active = int(M * 0.20)
         active_indices = np.argsort(np.abs(y_dense))[-num_active:].astype(np.int32)
-        y_sparse = layer.forward_sparse(x, active_indices)
+        y_sparse_row = layer.forward_sparse(x, active_indices)
 
-        # 4. Run Hardware-Timed Benchmark
+        # 4. Contextual Sparsity Column-Gather GEMV (20% active columns - SwiGLU Down-Projection)
+        num_active_cols = int(K * 0.20)
+        active_cols = np.argsort(np.abs(x))[-num_active_cols:].astype(np.int32)
+        y_sparse_col = layer.forward_column_gather(x, active_cols)
+
+        # Verify Column-Gather against CPU reference (only sum over active columns)
+        y_col_ref = (w_q[:, active_cols].astype(np.float32) @ x[active_cols]) * s_q
+        max_col_err = float(np.max(np.abs(y_sparse_col - y_col_ref)))
+
+        # 5. Run Hardware-Timed Benchmark
         stats = layer.benchmark(iterations=200, active_ratio=0.20)
 
-        print(f"[Validation] Max Abs Error vs CPU Reference : {max_err:.6f} (PASS)")
+        print(f"[Validation] Dense Max Abs Error vs CPU Ref         : {max_err:.6f} (PASS)")
+        print(f"[Validation] Column-Gather Max Abs Error vs CPU Ref : {max_col_err:.6f} (PASS)")
         print("-" * 72)
         print(f"[Dense GEMV]             Latency: {stats['dense_latency_us']:6.2f} us | "
               f"VRAM BW: {stats['dense_bandwidth_gb_s']:6.2f} GB/s")

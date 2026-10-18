@@ -15,9 +15,10 @@ Large Language Models (LLMs) running at `batch_size = 1` (local autoregressive g
 
 **RadeonSparse (`radeon-sparse`)** eliminates this memory bottleneck at the hardware level across **AMD Radeon GPUs** (RX 6000, RX 7000, RX 9000 series, and Radeon APUs) with zero external dependencies (no multi-gigabyte ROCm SDK required — runs directly via the native driver `OpenCL.dll` / `libOpenCL.so`):
 
-1. **Vectorized Wavefront INT8 GEMV (`gemv_radeon_dense`):** Uses coalesced 128-bit burst vector loads (`vload16`), native RDNA3 Wave32 execution (`local_size = 32`), hardware `convert_float16` instructions, conflict-free Local Data Share (LDS) parallel tree reduction, and arbitrary-$K$ tail handling to saturate the 16-byte memory bus of any target Radeon GPU.
-2. **Contextual Sparsity `Gather-GEMV` (`gemv_radeon_sparse_gather`):** Dynamically fetches *only* the active FFN rows (`15%–25%`) from VRAM. By skipping 75%–85% of inactive neurons, it drastically reduces external VRAM traffic and shrinks the active working set so it can reside inside the GPU's on-die **AMD Infinity Cache (L3)** (whether 32 MB, 64 MB, or 96 MB).
-3. **Ergonomic C & Python SDK:** Automatic FP32-to-INT8 per-channel quantization (`rs_create_weights_from_fp32`), in-place VRAM buffer updates, and a drop-in Python `RadeonSparseEngine` + `SparseLinearLayer` SDK.
+1. **Vectorized Wavefront INT8 GEMV (`gemv_radeon_dense`):** Uses coalesced 128-bit burst vector loads (`vload16`), native RDNA2/RDNA3 Wave32 execution (`local_size = 32`), hardware `convert_float16` instructions, conflict-free Local Data Share (LDS) parallel tree reduction, and arbitrary-$K$ tail handling.
+2. **Contextual Sparsity Row-Gather (`gemv_radeon_sparse_gather`):** Dynamically fetches *only* active FFN rows (`15%–25%`) for Up and Gate projections, skipping 75%–85% of inactive weights and magnifying effective bandwidth through the on-die **AMD Infinity Cache**.
+3. **Contextual Sparsity Column-Gather (`gemv_radeon_sparse_column_gather`):** Computes all $d_{\text{model}}$ output channels for SwiGLU Down-projections while reading *only* the active columns, powered by **RDNA 3 Dual-Issue VOPD** instruction pairing.
+4. **Ergonomic C & Python SDK:** Automatic FP32-to-INT8 per-channel quantization (`rs_create_weights_from_fp32`), in-place zero-copy VRAM buffer updates, and a drop-in Python `RadeonSparseEngine` + `SparseLinearLayer` SDK.
 
 ---
 

@@ -67,11 +67,30 @@ int main(void) {
 
     double phys_bw = 0.0, eff_bw = 0.0;
     double sparse_us = rs_benchmark_gather_gemv(ctx, d_W, d_X, d_S, d_Y, d_Idx, num_active, 200, &phys_bw, &eff_bw);
-    printf("[2] Contextual Sparse Gather-GEMV (20%% Active = %d / %d rows):\n", num_active, M);
+    printf("[2] Contextual Sparse Row-Gather GEMV (20%% Active = %d / %d rows):\n", num_active, M);
     printf("    Latency             : %.2f us (%.2fx faster than Dense)\n", sparse_us, dense_us / sparse_us);
     printf("    Physical Bandwidth  : %.2f GB/s\n", phys_bw);
-    printf("    Effective Bandwidth : %.2f GB/s\n", eff_bw);
+    printf("    Effective Bandwidth : %.2f GB/s\n\n", eff_bw);
+
+    /* 4. Contextual Sparsity Column-Gather GEMV (SwiGLU Down-Projection, 20% active columns) */
+    int num_active_cols = K / 5;
+    for (int i = 0; i < num_active_cols; i++) {
+        h_idx[i] = i * 5;
+    }
+    rs_tensor_t d_ColIdx = rs_create_indices_int32(ctx, num_active_cols, h_idx);
+
+    rs_zero_vector_fp32(ctx, d_Y);
+    rs_column_gather_gemv_int8(ctx, d_W, d_X, d_S, d_Y, d_ColIdx, num_active_cols);
+
+    double col_phys_bw = 0.0, col_eff_bw = 0.0;
+    double col_sparse_us = rs_benchmark_column_gather_gemv(ctx, d_W, d_X, d_S, d_Y, d_ColIdx, num_active_cols, 200, &col_phys_bw, &col_eff_bw);
+    printf("[3] Contextual Sparse Column-Gather GEMV (20%% Active = %d / %d columns):\n", num_active_cols, K);
+    printf("    Latency             : %.2f us (%.2fx faster than Dense)\n", col_sparse_us, dense_us / col_sparse_us);
+    printf("    Physical Bandwidth  : %.2f GB/s\n", col_phys_bw);
+    printf("    Effective Bandwidth : %.2f GB/s\n", col_eff_bw);
     printf("======================================================================\n");
+
+    rs_free_tensor(ctx, d_ColIdx);
 
     rs_free_tensor(ctx, d_Idx);
     rs_free_tensor(ctx, d_Y);

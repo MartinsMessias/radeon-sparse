@@ -265,7 +265,64 @@ static const char* RADEON_SPARSE_KERNEL_SOURCE =
 "    }\n"
 "}\n"
 "\n"
-"/* 3. Fast Vector Zeroing */\n"
+"/* 3. Contextual Sparsity Column-Gather GEMV (RDNA3 Wave32 Dual-Issue VOPD) */\n"
+"__attribute__((reqd_work_group_size(32, 1, 1)))\n"
+"__kernel void gemv_radeon_sparse_column_gather(\n"
+"    __global const char* restrict W,\n"
+"    __global const float* restrict X,\n"
+"    __global const float* restrict scales,\n"
+"    __global float* restrict Y,\n"
+"    __global const int* restrict active_cols,\n"
+"    const int num_active,\n"
+"    const int M,\n"
+"    const int K\n"
+") {\n"
+"    int row = get_group_id(0);\n"
+"    int tid = get_local_id(0);\n"
+"    if (row >= M) return;\n"
+"\n"
+"    __global const char* rW = W + (size_t)row * K;\n"
+"    float acc0 = 0.0f;\n"
+"    float acc1 = 0.0f;\n"
+"\n"
+"    int c = tid * 2;\n"
+"    int stride = 64;\n"
+"    for (; c + 1 < num_active; c += stride) {\n"
+"        int col0 = active_cols[c];\n"
+"        int col1 = active_cols[c + 1];\n"
+"        float w0 = (float)rW[col0];\n"
+"        float w1 = (float)rW[col1];\n"
+"        float x0 = X[col0];\n"
+"        float x1 = X[col1];\n"
+"        acc0 = mad(w0, x0, acc0);\n"
+"        acc1 = mad(w1, x1, acc1);\n"
+"    }\n"
+"    if (c < num_active) {\n"
+"        int col0 = active_cols[c];\n"
+"        acc0 = mad((float)rW[col0], X[col0], acc0);\n"
+"    }\n"
+"\n"
+"    float thread_sum = acc0 + acc1;\n"
+"\n"
+"    __local float lds[32];\n"
+"    lds[tid] = thread_sum;\n"
+"    barrier(CLK_LOCAL_MEM_FENCE);\n"
+"\n"
+"    if (tid < 16) lds[tid] += lds[tid + 16];\n"
+"    barrier(CLK_LOCAL_MEM_FENCE);\n"
+"    if (tid < 8)  lds[tid] += lds[tid + 8];\n"
+"    barrier(CLK_LOCAL_MEM_FENCE);\n"
+"    if (tid < 4)  lds[tid] += lds[tid + 4];\n"
+"    barrier(CLK_LOCAL_MEM_FENCE);\n"
+"    if (tid < 2)  lds[tid] += lds[tid + 2];\n"
+"    barrier(CLK_LOCAL_MEM_FENCE);\n"
+"\n"
+"    if (tid == 0) {\n"
+"        Y[row] = (lds[0] + lds[1]) * scales[row];\n"
+"    }\n"
+"}\n"
+"\n"
+"/* 4. Fast Vector Zeroing */\n"
 "__kernel void radeon_zero_vector(\n"
 "    __global float* restrict vec,\n"
 "    const int size\n"
@@ -276,7 +333,7 @@ static const char* RADEON_SPARSE_KERNEL_SOURCE =
 "    }\n"
 "}\n"
 "\n"
-"/* 4. Hardware SwiGLU / Top-K Activation Gate */\n"
+"/* 5. Hardware SwiGLU / Top-K Activation Gate */\n"
 "__kernel void radeon_activation_gate(\n"
 "    __global const float* restrict gate,\n"
 "    __global const float* restrict up,\n"
@@ -301,6 +358,7 @@ typedef struct {
     cl_program program;
     cl_kernel kernel_dense;
     cl_kernel kernel_gather;
+    cl_kernel kernel_col_gather;
     cl_kernel kernel_zero;
     cl_kernel kernel_gate;
     cl_device_id device;
@@ -402,13 +460,14 @@ RS_API int RS_CALL rs_init(rs_context_t* ctx_out) {
         return RS_ERR_PROGRAM_BUILD_FAILED;
     }
 
-    cl_int err1 = 0, err2 = 0, err3 = 0, err4 = 0;
-    state->kernel_dense  = clCreateKernel(state->program, "gemv_radeon_dense", &err1);
-    state->kernel_gather = clCreateKernel(state->program, "gemv_radeon_sparse_gather", &err2);
-    state->kernel_zero   = clCreateKernel(state->program, "radeon_zero_vector", &err3);
-    state->kernel_gate   = clCreateKernel(state->program, "radeon_activation_gate", &err4);
+    cl_int err1 = 0, err2 = 0, err3 = 0, err4 = 0, err5 = 0;
+    state->kernel_dense      = clCreateKernel(state->program, "gemv_radeon_dense", &err1);
+    state->kernel_gather     = clCreateKernel(state->program, "gemv_radeon_sparse_gather", &err2);
+    state->kernel_col_gather = clCreateKernel(state->program, "gemv_radeon_sparse_column_gather", &err5);
+    state->kernel_zero       = clCreateKernel(state->program, "radeon_zero_vector", &err3);
+    state->kernel_gate       = clCreateKernel(state->program, "radeon_activation_gate", &err4);
 
-    if (err1 != 0 || err2 != 0 || err3 != 0 || err4 != 0) {
+    if (err1 != 0 || err2 != 0 || err3 != 0 || err4 != 0 || err5 != 0) {
         rs_shutdown((rs_context_t)state);
         return RS_ERR_KERNEL_FAILED;
     }
@@ -425,13 +484,14 @@ RS_API const char* RS_CALL rs_get_device_name(rs_context_t ctx) {
 RS_API void RS_CALL rs_shutdown(rs_context_t ctx) {
     if (!ctx) return;
     rs_context_internal* state = (rs_context_internal*)ctx;
-    if (state->kernel_dense)  clReleaseKernel(state->kernel_dense);
-    if (state->kernel_gather) clReleaseKernel(state->kernel_gather);
-    if (state->kernel_zero)   clReleaseKernel(state->kernel_zero);
-    if (state->kernel_gate)   clReleaseKernel(state->kernel_gate);
-    if (state->program)       clReleaseProgram(state->program);
-    if (state->queue)         clReleaseCommandQueue(state->queue);
-    if (state->ctx)           clReleaseContext(state->ctx);
+    if (state->kernel_dense)      clReleaseKernel(state->kernel_dense);
+    if (state->kernel_gather)     clReleaseKernel(state->kernel_gather);
+    if (state->kernel_col_gather) clReleaseKernel(state->kernel_col_gather);
+    if (state->kernel_zero)       clReleaseKernel(state->kernel_zero);
+    if (state->kernel_gate)       clReleaseKernel(state->kernel_gate);
+    if (state->program)           clReleaseProgram(state->program);
+    if (state->queue)             clReleaseCommandQueue(state->queue);
+    if (state->ctx)               clReleaseContext(state->ctx);
     free(state);
 }
 
@@ -828,6 +888,133 @@ RS_API int RS_CALL rs_gate_activations_fp32(
 
     clFinish(state->queue);
     return RS_SUCCESS;
+}
+
+RS_API int RS_CALL rs_column_gather_gemv_int8(
+    rs_context_t ctx,
+    rs_tensor_t weights,
+    rs_tensor_t input_x,
+    rs_tensor_t scales,
+    rs_tensor_t output_y,
+    rs_tensor_t active_columns,
+    int num_active
+) {
+    if (!ctx || !weights || !input_x || !scales || !output_y || !active_columns || num_active <= 0) {
+        return RS_ERR_INVALID_ARG;
+    }
+    rs_context_internal* state = (rs_context_internal*)ctx;
+    rs_tensor_internal* tW   = (rs_tensor_internal*)weights;
+    rs_tensor_internal* tX   = (rs_tensor_internal*)input_x;
+    rs_tensor_internal* tS   = (rs_tensor_internal*)scales;
+    rs_tensor_internal* tY   = (rs_tensor_internal*)output_y;
+    rs_tensor_internal* tCol = (rs_tensor_internal*)active_columns;
+
+    if (tW->cols != tX->rows || tW->rows != tS->rows || tW->rows != tY->rows || num_active > tCol->rows) {
+        return RS_ERR_DIMENSION_MISMATCH;
+    }
+
+    int M = tW->rows;
+    int K = tW->cols;
+
+    clSetKernelArg(state->kernel_col_gather, 0, sizeof(cl_mem), &tW->buffer);
+    clSetKernelArg(state->kernel_col_gather, 1, sizeof(cl_mem), &tX->buffer);
+    clSetKernelArg(state->kernel_col_gather, 2, sizeof(cl_mem), &tS->buffer);
+    clSetKernelArg(state->kernel_col_gather, 3, sizeof(cl_mem), &tY->buffer);
+    clSetKernelArg(state->kernel_col_gather, 4, sizeof(cl_mem), &tCol->buffer);
+    clSetKernelArg(state->kernel_col_gather, 5, sizeof(int), &num_active);
+    clSetKernelArg(state->kernel_col_gather, 6, sizeof(int), &M);
+    clSetKernelArg(state->kernel_col_gather, 7, sizeof(int), &K);
+
+    cl_size_t local_size = 32;
+    cl_size_t global_size = (cl_size_t)M * local_size;
+
+    cl_int err = clEnqueueNDRangeKernel(state->queue, state->kernel_col_gather, 1, NULL, &global_size, &local_size, 0, NULL, NULL);
+    if (err != 0) return RS_ERR_EXECUTION_FAILED;
+
+    clFinish(state->queue);
+    return RS_SUCCESS;
+}
+
+RS_API double RS_CALL rs_benchmark_column_gather_gemv(
+    rs_context_t ctx,
+    rs_tensor_t weights,
+    rs_tensor_t input_x,
+    rs_tensor_t scales,
+    rs_tensor_t output_y,
+    rs_tensor_t active_columns,
+    int num_active,
+    int iterations,
+    double* out_physical_bw_gb_s,
+    double* out_effective_bw_gb_s
+) {
+    if (!ctx || !weights || !input_x || !scales || !output_y || !active_columns || iterations <= 0 || num_active <= 0) return 0.0;
+    rs_context_internal* state = (rs_context_internal*)ctx;
+    rs_tensor_internal* tW   = (rs_tensor_internal*)weights;
+    rs_tensor_internal* tX   = (rs_tensor_internal*)input_x;
+    rs_tensor_internal* tS   = (rs_tensor_internal*)scales;
+    rs_tensor_internal* tY   = (rs_tensor_internal*)output_y;
+    rs_tensor_internal* tCol = (rs_tensor_internal*)active_columns;
+
+    if (tW->cols != tX->rows || tW->rows != tS->rows || tW->rows != tY->rows || num_active > tCol->rows) return 0.0;
+
+    int M = tW->rows;
+    int K = tW->cols;
+
+    clSetKernelArg(state->kernel_col_gather, 0, sizeof(cl_mem), &tW->buffer);
+    clSetKernelArg(state->kernel_col_gather, 1, sizeof(cl_mem), &tX->buffer);
+    clSetKernelArg(state->kernel_col_gather, 2, sizeof(cl_mem), &tS->buffer);
+    clSetKernelArg(state->kernel_col_gather, 3, sizeof(cl_mem), &tY->buffer);
+    clSetKernelArg(state->kernel_col_gather, 4, sizeof(cl_mem), &tCol->buffer);
+    clSetKernelArg(state->kernel_col_gather, 5, sizeof(int), &num_active);
+    clSetKernelArg(state->kernel_col_gather, 6, sizeof(int), &M);
+    clSetKernelArg(state->kernel_col_gather, 7, sizeof(int), &K);
+
+    cl_size_t local_size = 32;
+    cl_size_t global_size = (cl_size_t)M * local_size;
+
+    /* Warmup */
+    for (int i = 0; i < 5; i++) {
+        clEnqueueNDRangeKernel(state->queue, state->kernel_col_gather, 1, NULL, &global_size, &local_size, 0, NULL, NULL);
+    }
+    clFinish(state->queue);
+
+    cl_ulong total_ns = 0;
+    for (int i = 0; i < iterations; i++) {
+        cl_event ev;
+        cl_int err = clEnqueueNDRangeKernel(state->queue, state->kernel_col_gather, 1, NULL, &global_size, &local_size, 0, NULL, &ev);
+        if (err != 0) return 0.0;
+        clWaitForEvents(1, &ev);
+
+        cl_ulong t_start = 0, t_end = 0;
+        clGetEventProfilingInfo(ev, CL_PROFILING_COMMAND_START, sizeof(cl_ulong), &t_start, NULL);
+        clGetEventProfilingInfo(ev, CL_PROFILING_COMMAND_END, sizeof(cl_ulong), &t_end, NULL);
+        clReleaseEvent(ev);
+
+        if (t_end > t_start) {
+            total_ns += (t_end - t_start);
+        }
+    }
+
+    double avg_ns = (double)total_ns / iterations;
+    double avg_us = avg_ns / 1000.0;
+    double avg_sec = avg_ns / 1e9;
+
+    /* Physical bytes read: active columns of W + active elements of X + M scales + M output */
+    double physical_bytes = ((double)M * num_active * sizeof(char)) +
+                            ((double)num_active * sizeof(float)) +
+                            ((double)M * sizeof(float) * 2.0);
+    double physical_bw_gb_s = (physical_bytes / avg_sec) / 1e9;
+
+    /* Dense equivalent throughput */
+    double dense_bytes = ((double)M * K * sizeof(char)) +
+                         ((double)K * sizeof(float)) +
+                         ((double)M * sizeof(float) * 2.0);
+    double effective_bw_gb_s = (dense_bytes / avg_sec) / 1e9;
+
+    if (out_physical_bw_gb_s) *out_physical_bw_gb_s = physical_bw_gb_s;
+    if (out_effective_bw_gb_s) *out_effective_bw_gb_s = effective_bw_gb_s;
+
+    return avg_us;
 }
 
 RS_API double RS_CALL rs_benchmark_gemv(

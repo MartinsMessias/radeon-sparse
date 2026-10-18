@@ -159,6 +159,12 @@ class RadeonSparseEngine:
         ]
         L.rs_gather_gemv_int8.restype = ctypes.c_int
 
+        L.rs_column_gather_gemv_int8.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int
+        ]
+        L.rs_column_gather_gemv_int8.restype = ctypes.c_int
+
         L.rs_gate_activations_fp32.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_float
         ]
@@ -177,6 +183,14 @@ class RadeonSparseEngine:
             ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double)
         ]
         L.rs_benchmark_gather_gemv.restype = ctypes.c_double
+
+        L.rs_benchmark_column_gather_gemv.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_int, ctypes.c_int,
+            ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double)
+        ]
+        L.rs_benchmark_column_gather_gemv.restype = ctypes.c_double
 
     @property
     def device_name(self) -> str:
@@ -412,6 +426,50 @@ class SparseLinearLayer:
         )
 
         err = L.rs_gather_gemv_int8(
+            ctx, self._d_w, self._d_x, self._d_s, self._d_y, self._d_idx, num_active
+        )
+        if err != 0:
+            raise RadeonSparseError(self.engine.status_string(err))
+
+        out = np.empty(self.rows, dtype=np.float32)
+        L.rs_read_vector_fp32(
+            ctx, self._d_y, out.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        )
+        return out
+
+    def forward_column_gather(
+        self,
+        x: np.ndarray,
+        active_columns: np.ndarray,
+        zero_inactive: bool = True
+    ) -> np.ndarray:
+        """
+        Executes Contextual Column-Gather GEMV (Optimized for SwiGLU Down-Projection).
+        Computes all M output rows, but only reads weights for active columns from VRAM!
+        """
+        x_arr = np.ascontiguousarray(x, dtype=np.float32)
+        idx_arr = np.ascontiguousarray(active_columns, dtype=np.int32)
+        num_active = idx_arr.size
+
+        if x_arr.size != self.cols:
+            raise ValueError(f"Input size ({x_arr.size}) does not match layer cols ({self.cols})")
+        if num_active == 0:
+            return np.zeros(self.rows, dtype=np.float32)
+
+        L = self.engine._lib
+        ctx = self.engine._ctx
+
+        if zero_inactive:
+            L.rs_zero_vector_fp32(ctx, self._d_y)
+
+        L.rs_write_vector_fp32(
+            ctx, self._d_x, x_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), self.cols
+        )
+        L.rs_write_indices_int32(
+            ctx, self._d_idx, idx_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)), num_active
+        )
+
+        err = L.rs_column_gather_gemv_int8(
             ctx, self._d_w, self._d_x, self._d_s, self._d_y, self._d_idx, num_active
         )
         if err != 0:

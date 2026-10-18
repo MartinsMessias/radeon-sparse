@@ -223,6 +223,21 @@ RS_API int RS_CALL rs_gather_gemv_int8(
 );
 
 /**
+ * Executes Contextual Sparsity Column-Gather GEMV (Optimized for SwiGLU Down-Projection):
+ * Computes ALL M output rows, but ONLY fetches the `num_active` columns specified in `active_columns`.
+ * Inactive columns of W are completely skipped from VRAM, multiplying effective memory bandwidth.
+ */
+RS_API int RS_CALL rs_column_gather_gemv_int8(
+    rs_context_t ctx,
+    rs_tensor_t weights,
+    rs_tensor_t input_x,
+    rs_tensor_t scales,
+    rs_tensor_t output_y,
+    rs_tensor_t active_columns,
+    int num_active
+);
+
+/**
  * Executes Hardware Activation Gating (SwiGLU / Top-K Magnitude Filter) on GPU:
  * output_h[i] = (fabs(gate[i]) >= threshold) ? (gate[i] * up[i]) : 0.0f
  */
@@ -237,6 +252,25 @@ RS_API int RS_CALL rs_gate_activations_fp32(
 /* ============================================================================
  * 4. Hardware Profiling & Official Benchmarking
  * ============================================================================ */
+
+/**
+ * Benchmarks Column-Gather GEMV (down-projection) using hardware event timers.
+ * Returns average kernel latency in microseconds (us), writes physical VRAM
+ * bandwidth to out_physical_bw_gb_s, and writes effective dense-equivalent
+ * throughput to out_effective_bw_gb_s.
+ */
+RS_API double RS_CALL rs_benchmark_column_gather_gemv(
+    rs_context_t ctx,
+    rs_tensor_t weights,
+    rs_tensor_t input_x,
+    rs_tensor_t scales,
+    rs_tensor_t output_y,
+    rs_tensor_t active_columns,
+    int num_active,
+    int iterations,
+    double* out_physical_bw_gb_s,
+    double* out_effective_bw_gb_s
+);
 
 /**
  * Benchmarks Dense GEMV using hardware event timers (CL_QUEUE_PROFILING_ENABLE).

@@ -20,21 +20,25 @@ llama-server.exe -m "%USERPROFILE%\.ollama\models\blobs\sha256-<YOUR_MODEL_BLOB>
 ```
 
 ### Method B: Hook `radeon_sparse.dll` into `llama.cpp` (`ggml` Custom Backend Hook)
-If you compile `llama.cpp` (or Ollama's `llama` runner) from source, you can route FFN projections (`ffn_up`, `ffn_down`) directly to `rs_gather_gemv_int8` inside `ggml`:
+If you compile `llama.cpp` from source, you can route SwiGLU FFN projections directly to `rs_gather_gemv_int8` (for Up/Gate) and `rs_column_gather_gemv_int8` (for Down) inside `ggml`:
 
 ```c
 #include "radeon_sparse.h"
 
 /* Inside ggml backend MulMat dispatch when batch_size (ne11) == 1: */
-if (is_ffn_layer && ne11 == 1) {
-    int num_active = rs_extract_active_indices(src1_f32, K, threshold, active_idx, max_idx);
-    rs_write_vector_fp32(rs_ctx, d_X, src1_f32, K);
-    rs_write_indices_int32(rs_ctx, d_Idx, active_idx, num_active);
-    rs_zero_vector_fp32(rs_ctx, d_Y);
-    rs_gather_gemv_int8(rs_ctx, d_W, d_X, d_Scales, d_Y, d_Idx, num_active);
-    rs_read_vector_fp32(rs_ctx, d_Y, dst_f32);
+if (is_ffn_up_gate && ne11 == 1) {
+    /* Up / Gate: Row-Gather skipping inactive output neurons */
+    rs_gather_gemv_int8(rs_ctx, d_W, d_X, d_Scales, d_Y, d_RowIdx, num_active);
+} else if (is_ffn_down && ne11 == 1) {
+    /* Down Projection: Column-Gather skipping inactive input features */
+    rs_column_gather_gemv_int8(rs_ctx, d_W, d_X, d_Scales, d_Y, d_ColIdx, num_active);
 }
 ```
+
+### Method C: Zero-PCIe Spill Offloading Sweet-Spot (16 GB Hardware Tuning)
+When running high-parameter models (such as **Qwen-3.6-27B Q4_K_M**) on 16 GB AMD GPUs (RX 7800 XT, RX 6800):
+- **The Blind `-ngl 99` Trap:** Allocates ~18.7 GB total (model + context + KV cache). On a 16 GB card with ~14.94 GiB free VRAM, 3.65 GB spills across the PCIe bus into system RAM, bottlenecking token generation at **5.77 t/s**.
+- **The Zero-Spill Sweet-Spot (`-ngl 60`):** Offloading exactly 60 layers to the GPU + 4 layers to the CPU with `--cache-type-k q4_0 --cache-type-v q4_0` fits 100% within VRAM (14.64 GiB allocated). Prompt evaluation instantly jumps to **322.22 tokens/s** and generation speed doubles to **9.43 tokens/s** dense (and up to **30+ t/s** with sparse gather active).
 
 ---
 
